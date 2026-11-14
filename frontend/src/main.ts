@@ -125,7 +125,7 @@ const hud = `
     <div class="tiktok-guide" id="tiktok-guide" hidden aria-hidden="true">
       <div class="tt-crop left"><span>Có thể bị cắt trên điện thoại</span></div><div class="tt-crop right"><span>Có thể bị cắt trên điện thoại</span></div>
       <div class="tt-status"><b>12:01</b><b>▮▮ 4G 🔋</b></div>
-      <div class="tt-profile"><i></i><b id="tt-channel-name">tak · @akkkkk_224</b><span class="tt-follow">+ Follow</span></div>
+      <div class="tt-profile"><i></i><b id="tt-channel-name">Chuyến xe Tết · @kênh_của_bạn</b><span class="tt-follow">+ Follow</span></div>
       <div class="tt-viewers"><i></i><i></i><span>128</span><b>✕</b></div>
       <div class="tt-pill left">🔥 Bảng xếp hạng hằng ngày</div><div class="tt-pill right">Phòng trưng…</div>
       <div class="tt-comments"><p><b>An</b> 1</p><p><b>Bình</b> làm việc</p><p>👋 <b>Chi</b> đã tham gia</p><p><b>Dung</b> ghế 12</p></div>
@@ -158,7 +158,7 @@ app.innerHTML = `
         <div class="panel-tabs" role="tablist" aria-label="Bảng điều khiển"><button id="tab-control" role="tab" aria-selected="true" aria-controls="panel-control" class="selected">${icon('settings')} Điều khiển</button><button id="tab-audio" role="tab" aria-selected="false" aria-controls="panel-audio">${icon('volume')} Âm thanh</button></div>
         <div id="panel-control" role="tabpanel" aria-labelledby="tab-control">
           <section class="panel live-panel"><div class="panel-title"><span class="panel-icon rose">${icon('live')}</span><div><h2>TikTok LIVE</h2><p id="live-subtitle">Đọc bình luận, tim, quà, follow của phòng LIVE.</p></div><span class="live-state" id="live-state" data-status="idle">CHƯA KẾT NỐI</span></div>
-            <form id="live-form"><label for="live-user">Tên kênh TikTok <span>đang bật LIVE</span></label><div class="comment-input"><input id="live-user" name="live-user" placeholder="@akkkkk_224" maxlength="120" autocomplete="off" spellcheck="false" /><button class="button button-primary live-button" id="live-connect" type="submit">Kết nối</button></div></form>
+            <form id="live-form"><label for="live-user">Tên kênh TikTok <span>đang bật LIVE</span></label><div class="comment-input"><input id="live-user" name="live-user" placeholder="@tên_kênh" maxlength="120" autocomplete="off" spellcheck="false" /><button class="button button-primary live-button" id="live-connect" type="submit">Kết nối</button></div></form>
             <div class="live-status" id="live-status" aria-live="polite">Bật LIVE trên TikTok trước, rồi nhập tên kênh và bấm Kết nối.</div>
             <div class="live-counters" id="live-counters"></div>
             <button class="button button-outline live-mock" id="live-mock" type="button">${icon('users')} Chạy thử phòng LIVE giả lập</button>
@@ -204,7 +204,7 @@ app.innerHTML = `
     <footer class="app-footer"><span>${icon('check')} <span id="save-status">Đang mở phiên làm việc…</span></span><span>Hôm nay chạy KPI. Ngày mai xách vali. <span class="footer-flower">✿</span></span></footer>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <dialog id="help-dialog"><button class="dialog-close" id="close-help" aria-label="Đóng hướng dẫn">×</button><span class="eyebrow">CHÀO ĐỒNG NGHIỆP MỚI</span><h2>Vào làm & Về quê ăn Tết! <span>✿</span></h2><ol><li>Bật LIVE trên TikTok, nhập <b>@akkkkk_224</b> (hoặc tên kênh của bạn) rồi bấm <b>Kết nối</b>. Trong TikTok LIVE Studio, chọn <b>Thêm nguồn → Liên kết (Link) → Custom resolution: 1080 × 1920</b> (hoặc OBS Browser Source <b>1080 × 1920</b>) để giữ nét Full HD 1:1.</li><li><b>Chặng 1 – Công ty cuối năm</b>: bình luận <b>1</b> (vào làm), <b>2</b> (làm việc: +10 KPI, +500 xu), <b>3</b> (cà phê), <b>4</b> (xem lương).</li><li><b>Chặng 2 – Bến xe 24 ghế</b>: bấm <b>Bến xe 24 ghế</b> để mở bến. Người xem bình luận <b>lên xe</b>, số ghế <b>1–24</b>, tên tuyến (<b>miền tây</b>, <b>tây nguyên</b>, <b>miền trung</b>, <b>miền bắc</b>), <b>vé</b> hoặc <b>xuống xe</b>. Đủ 24 ghế xe tự xuất bến sau 10 giây!</li><li><b>Thả tim</b> nạp thanh tiếp sức chung. <b>Follow</b> là ký hợp đồng (+1.000 xu, một lần). <b>Quà</b> chia thưởng cho cả phòng, không mua lợi thế hay tranh ghế.</li><li>Chưa LIVE vẫn thử được: <b>Chạy thử phòng LIVE giả lập</b> hoặc các nút <b>Tương tác LIVE thử</b>.</li></ol><p>Điểm, KPI, vé xe và xu là vật phẩm trong game, không quy đổi tiền thật. Hồ sơ được lưu trên máy và giữ lại khi khởi động lại.</p><button class="button button-primary" id="understood-help">Mình hiểu rồi ${icon('arrow')}</button></dialog>
+  <dialog id="help-dialog"><button class="dialog-close" id="close-help" aria-label="Đóng hướng dẫn">×</button><span class="eyebrow">CHÀO ĐỒNG NGHIỆP MỚI</span><h2>Vào làm & Về quê ăn Tết! <span>✿</span></h2><ol><li>Bật LIVE trên TikTok, nhập <b>@tên kênh TikTok</b> của bạn rồi bấm <b>Kết nối</b>. Trong TikTok LIVE Studio, chọn <b>Thêm nguồn → Liên kết (Link) → Custom resolution: 1080 × 1920</b> (hoặc OBS Browser Source <b>1080 × 1920</b>) để giữ nét Full HD 1:1.</li><li><b>Chặng 1 – Công ty cuối năm</b>: bình luận <b>1</b> (vào làm), <b>2</b> (làm việc: +10 KPI, +500 xu), <b>3</b> (cà phê), <b>4</b> (xem lương).</li><li><b>Chặng 2 – Bến xe 24 ghế</b>: bấm <b>Bến xe 24 ghế</b> để mở bến. Người xem bình luận <b>lên xe</b>, số ghế <b>1–24</b>, tên tuyến (<b>miền tây</b>, <b>tây nguyên</b>, <b>miền trung</b>, <b>miền bắc</b>), <b>vé</b> hoặc <b>xuống xe</b>. Đủ 24 ghế xe tự xuất bến sau 10 giây!</li><li><b>Thả tim</b> nạp thanh tiếp sức chung. <b>Follow</b> là ký hợp đồng (+1.000 xu, một lần). <b>Quà</b> chia thưởng cho cả phòng, không mua lợi thế hay tranh ghế.</li><li>Chưa LIVE vẫn thử được: <b>Chạy thử phòng LIVE giả lập</b> hoặc các nút <b>Tương tác LIVE thử</b>.</li></ol><p>Điểm, KPI, vé xe và xu là vật phẩm trong game, không quy đổi tiền thật. Hồ sơ được lưu trên máy và giữ lại khi khởi động lại.</p><button class="button button-primary" id="understood-help">Mình hiểu rồi ${icon('arrow')}</button></dialog>
   <button class="overlay-audio" id="overlay-audio" ${overlayMode ? '' : 'hidden'} aria-label="Bật âm thanh cho overlay">${icon('volume')}</button>
 `;
 
@@ -228,7 +228,7 @@ const storage = {
   set: (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* Optional convenience. */ } },
 };
 nicknameInput.value = storage.get('tetlive.nickname') || 'Bạn của Tết';
-liveInput.value = storage.get('tetlive.tiktok') || '@akkkkk_224';
+liveInput.value = storage.get('tetlive.tiktok') || '';
 
 function manualId(name: string) {
   let hash = 2166136261;
@@ -665,7 +665,7 @@ $('#live-form').addEventListener('submit', (event) => {
     return;
   }
   const name = liveInput.value.trim();
-  if (!name) { liveInput.focus(); toast('Nhập tên kênh TikTok đang LIVE, ví dụ @akkkkk_224.'); return; }
+  if (!name) { liveInput.focus(); toast('Nhập tên kênh TikTok đang LIVE, ví dụ @ten_kenh.'); return; }
   storage.set('tetlive.tiktok', name);
   void liveRequest('/api/live/connect', { unique_id: name });
 });
@@ -851,12 +851,8 @@ for (const eventName of UNLOCK_EVENTS) {
 }
 void request<GameState>('/api/state').then((initialState) => {
   if (destroyed) return;
-  setState(initialState);
   // Opening a page never invents participants or advances the round.
-  // In a real desktop browser (not headless WebDriver tests), auto-connect to the pre-filled TikTok channel if idle.
-  if (!navigator.webdriver && !overlayMode && initialState.live.status === 'idle' && liveInput.value.trim()) {
-    void liveRequest('/api/live/connect', { unique_id: liveInput.value.trim() });
-  }
+  setState(initialState);
 }).catch(() => connectionStatus(false));
 
 const hintTimer = setInterval(() => {

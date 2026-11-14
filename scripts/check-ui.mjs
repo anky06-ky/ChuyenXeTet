@@ -100,6 +100,7 @@ try {
   await expect(page.locator('#month-chip')).toHaveText('Mở cửa tự do');
   await expect(page.locator('#stage-month')).toHaveText('MỞ CỬA TỰ DO');
   await expect(page.locator('#live-state')).toHaveText('CHƯA KẾT NỐI');
+  await expect(page.locator('#live-user')).toHaveValue('');
   await expect(page.locator('#hud-badge')).toHaveText('CHƯA LIVE');
   await expect(page.locator('#hud-badge')).toHaveAttribute('data-mode', 'idle');
   await expect(page.locator('#month-button')).toBeHidden();
@@ -440,10 +441,11 @@ try {
   await inspect(livePage, 'live-transitions');
   await livePage.goto(base2);
   await expect(livePage.locator('#hud-badge')).toHaveText('CHƯA LIVE');
+  await expect(livePage.locator('#live-user')).toHaveValue('');
   await livePage.locator('#scene-station').click();
   await expect(livePage.locator('#board-title')).toHaveText('BẾN XE VỀ QUÊ');
   await fetch(`${base2}/api/demo/seed`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ count: 3 }) });
-  await livePage.locator('#live-user').fill('@akkkkk_224');
+  await livePage.locator('#live-user').fill('@kenh_thu_live');
   await livePage.locator('#live-connect').click();
   await expect(livePage.locator('#hud-badge')).toHaveText('CHỜ LIVE');
   await expect(livePage.locator('#hud-badge')).toHaveAttribute('data-mode', 'waiting');

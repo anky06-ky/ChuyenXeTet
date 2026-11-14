@@ -251,7 +251,7 @@ def test_station_live_events_cues_spam_emojis_and_ws_drop_isolation(tmp_path):
             assert healthy.receive_json()["events"][0]["code"] == "BOOST"
 
 
-def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
+def test_bridge_retries_not_live_and_survives_spam(tmp_path):
     fake = tmp_path / "offline-then-live.mjs"
     marker = tmp_path / "attempts.txt"
     fake.write_text(f"""
@@ -266,7 +266,7 @@ def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
             send({{ t: 'status', status: 'error', code: 'NOT_LIVE', error: 'offline' }});
             process.exit(1);
         }}
-        send({{ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId: 'room_ak' }});
+        send({{ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId: 'room_test' }});
         for (let i = 0; i < 30; i++) {{
             send({{ t: 'chat', id: 'spam_' + i, user: {{ id: '999', uniqueId: 'spam.user', nickname: '🔥' + 'A'.repeat(60) }}, text: 'lên xe 🎉' }});
         }}
@@ -291,7 +291,7 @@ def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
             await orig_retry(generation, unique_id, 0.05)
 
         bridge._retry = fast_retry
-        await bridge.connect("@akkkkk_224")
+        await bridge.connect("@test_channel")
         for _ in range(100):
             await asyncio.sleep(0.05)
             if bridge.public()["status"] == "connected" and any(r.get("code") == "SEATED" for b in batches for r in b):
@@ -299,7 +299,7 @@ def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
         status = bridge.public()
         await bridge.close()
         assert len(observed_delays) == 1 and 5.0 <= observed_delays[0] <= 6.5
-        assert status["unique_id"] == "akkkkk_224"
+        assert status["unique_id"] == "test_channel"
         assert status["status"] == "connected"
         assert status["counters"]["chat"] == 30
         players = engine.snapshot()["players"]
@@ -375,7 +375,7 @@ def test_tunnel_readonly_get_and_ws_allowed_while_post_stays_loopback_only(tmp_p
         post_cases = [
             ("/api/command", {"player_id": "u1", "nickname": "A", "text": "lên xe"}),
             ("/api/control", {"action": "depart"}),
-            ("/api/live/connect", {"unique_id": "@akkkkk_224"}),
+            ("/api/live/connect", {"unique_id": "@test_channel"}),
             ("/api/live/disconnect", {}),
             ("/api/live/mock", {}),
             ("/api/live/simulate", {"kind": "enter", "player_id": "u1", "nickname": "A"}),
@@ -424,7 +424,7 @@ def test_app_autoconnects_on_startup_and_clears_rehearsal_on_connected(tmp_path,
     """, encoding="utf-8")
 
     monkeypatch.setenv("TETLIVE_NO_AUTOCONNECT", "0")
-    monkeypatch.setenv("TETLIVE_CHANNEL", "@akkkkk_224")
+    monkeypatch.setenv("TETLIVE_CHANNEL", "@test_channel")
 
     with TestClient(create_app(db_path, connector=fake)) as client:
         assert client.app.state.live.on_status is not None
@@ -437,7 +437,7 @@ def test_app_autoconnects_on_startup_and_clears_rehearsal_on_connected(tmp_path,
                 break
             time.sleep(0.05)
         assert state["live"]["status"] == "connected"
-        assert state["live"]["unique_id"] == "akkkkk_224"
+        assert state["live"]["unique_id"] == "test_channel"
         assert state["stats"]["demo_players"] == 0
         assert state["stats"]["total_players"] == 2
         assert state["energy"] == {"hearts": 5, "target": HEART_BOOST, "boosts": 0}
@@ -493,7 +493,7 @@ def test_app_clears_prior_stream_waiting_and_seats_when_new_room_connects(tmp_pa
     """, encoding="utf-8")
 
     monkeypatch.setenv("TETLIVE_NO_AUTOCONNECT", "0")
-    monkeypatch.setenv("TETLIVE_CHANNEL", "@akkkkk_224")
+    monkeypatch.setenv("TETLIVE_CHANNEL", "@test_channel")
 
     with TestClient(create_app(db_path, connector=fake)) as client:
         assert client.app.state.live.on_status is not None
@@ -522,7 +522,7 @@ def test_app_clears_prior_stream_waiting_and_seats_when_new_room_connects(tmp_pa
         # Connecting to a new room_id clears room_today_1's waiting queue immediately.
         with client.websocket_connect("/ws") as ws:
             assert ws.receive_json()["type"] == "snapshot"
-            client.post("/api/live/connect", json={"unique_id": "@akkkkk_224"})
+            client.post("/api/live/connect", json={"unique_id": "@test_channel"})
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 state2 = client.get("/api/state").json()
@@ -531,3 +531,35 @@ def test_app_clears_prior_stream_waiting_and_seats_when_new_room_connects(tmp_pa
                 time.sleep(0.05)
             assert state2["session"]["live_room_id"] == "room_today_2"
             assert state2["station"]["waiting"] == []
+
+
+def test_app_starts_idle_without_autoconnect_when_channel_unset_or_empty(tmp_path, monkeypatch):
+    marker = tmp_path / "spawned.txt"
+    fake = tmp_path / "unexpected-connector.mjs"
+    fake.write_text(f"""
+        import fs from 'node:fs';
+        fs.writeFileSync({marker.as_posix()!r}, process.argv[2] || 'called');
+    """, encoding="utf-8")
+
+    monkeypatch.delenv("TETLIVE_NO_AUTOCONNECT", raising=False)
+    monkeypatch.delenv("TETLIVE_CHANNEL", raising=False)
+
+    with TestClient(create_app(tmp_path / "unset.sqlite", connector=fake)) as client:
+        assert client.app.state.live.on_status is not None
+        status = client.get("/api/live/status").json()
+        state = client.get("/api/state").json()
+        assert status["status"] == "idle"
+        assert status["unique_id"] == ""
+        assert not status["waiting_live"]
+        assert state["live"]["status"] == "idle"
+        assert state["live"]["unique_id"] == ""
+        assert state["mode"] == "mock"
+    assert not marker.exists()
+
+    monkeypatch.setenv("TETLIVE_CHANNEL", "   ")
+    with TestClient(create_app(tmp_path / "empty.sqlite", connector=fake)) as client:
+        status = client.get("/api/live/status").json()
+        assert status["status"] == "idle"
+        assert status["unique_id"] == ""
+        assert not status["waiting_live"]
+    assert not marker.exists()

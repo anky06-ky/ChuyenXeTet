@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect
 import os
 import re
 import sys
@@ -159,10 +158,9 @@ def create_app(database_path: str | Path | None = None, connector: Path | None =
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.engine = GameEngine(database)
-        live_kwargs = {"on_status": on_live_status} if "on_status" in inspect.signature(LiveBridge.__init__).parameters else {}
-        app.state.live = LiveBridge(app.state.engine, publish_many, ROOT, connector=connector, **live_kwargs)
+        app.state.live = LiveBridge(app.state.engine, publish_many, ROOT, connector=connector, on_status=on_live_status)
         depart_task = asyncio.create_task(depart_watch())
-        auto_channel = os.getenv("TETLIVE_CHANNEL", "akkkkk_224").strip()
+        auto_channel = os.getenv("TETLIVE_CHANNEL", "").strip()
         if os.getenv("TETLIVE_NO_AUTOCONNECT", "").strip() != "1" and auto_channel:
             await app.state.live.connect(auto_channel)
         try:
