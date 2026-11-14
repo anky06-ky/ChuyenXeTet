@@ -1,6 +1,7 @@
-fastapi==0.162.5
-pydantic==2.12.5
-uvicorn==0.54.0
-websockets==17.4
-pytest==9.2.0
-httpx==0.28.1
+fastapi>=0.115.0
+# Exclude 2.14.3: Windows Application Control may block its binary extension
+pydantic>=2.10.0,!=2.14.3
+uvicorn>=0.32.0
+websockets>=14.0
+pytest>=8.0.0
+httpx>=0.27.0
