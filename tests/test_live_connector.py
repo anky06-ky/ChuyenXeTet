@@ -17,6 +17,12 @@ from backend.live import (
 
 ROOT = Path(__file__).resolve().parent.parent
 REAL_CONNECTOR = ROOT / "connector" / "tiktok-connector.mjs"
+HAS_NODE = bool(shutil.which("node"))
+HAS_NODE_CONNECTOR = (
+    HAS_NODE
+    and (ROOT / "node_modules" / "piratetok-live-js").is_dir()
+    and (ROOT / "node_modules" / "ws").is_dir()
+)
 
 REQUIRED_PUBLIC_KEYS = {
     "status",
@@ -55,7 +61,7 @@ def _wait_until(predicate, timeout: float = 5.0):
     return runner()
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for connector tests")
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js is required for connector tests")
 def test_not_live_progressive_polling_and_reset_on_connect(tmp_path):
     marker = tmp_path / "attempt.txt"
     fake = tmp_path / "not-live-connector.mjs"
@@ -98,7 +104,7 @@ def test_not_live_progressive_polling_and_reset_on_connect(tmp_path):
         observed: list[tuple[str, float, dict]] = []
         _install_fast_retry(bridge, observed)
 
-        initial = await bridge.connect("@akkkkk_224")
+        initial = await bridge.connect("@test_channel")
         assert REQUIRED_PUBLIC_KEYS.issubset(initial.keys())
         assert initial["waiting_live"] is True
 
@@ -137,7 +143,7 @@ def test_not_live_progressive_polling_and_reset_on_connect(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for connector tests")
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js is required for connector tests")
 def test_transient_errors_backoff_never_stops_and_resets_on_connect(tmp_path):
     marker = tmp_path / "err_attempt.txt"
     fake = tmp_path / "transient-errors.mjs"
@@ -175,7 +181,7 @@ def test_transient_errors_backoff_never_stops_and_resets_on_connect(tmp_path):
         observed: list[tuple[str, float, dict]] = []
         _install_fast_retry(bridge, observed)
 
-        await bridge.connect("akkkkk_224")
+        await bridge.connect("test_channel")
         ok = await _wait_until(lambda: bridge.public()["status"] == "connected", timeout=8.0)
         assert ok, bridge.public()
 
@@ -201,7 +207,7 @@ def test_transient_errors_backoff_never_stops_and_resets_on_connect(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for connector tests")
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js is required for connector tests")
 def test_permanent_errors_ended_and_disconnect_stop_retries(tmp_path):
     fake = tmp_path / "stop-cases.mjs"
     fake.write_text(
@@ -273,7 +279,7 @@ def test_permanent_errors_ended_and_disconnect_stop_retries(tmp_path):
         asyncio.run(scenario(mp))
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for connector tests")
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js is required for connector tests")
 def test_stderr_capture_warning_and_pre_connect_reconnecting_guard(tmp_path):
     marker = tmp_path / "crash_once.txt"
     fake = tmp_path / "crash-and-reconnect.mjs"
@@ -315,7 +321,7 @@ def test_stderr_capture_warning_and_pre_connect_reconnecting_guard(tmp_path):
         observed = []
         _install_fast_retry(bridge, observed)
 
-        await bridge.connect("akkkkk_224")
+        await bridge.connect("test_channel")
         # Wait until attempt 1 crashes into retry (before fast retry completes or inspect observed snapshot).
         assert await _wait_until(lambda: len(observed) >= 1 and bridge.public()["status"] == "reconnecting", timeout=6.0)
 
@@ -338,7 +344,7 @@ def test_stderr_capture_warning_and_pre_connect_reconnecting_guard(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for connector tests")
+@pytest.mark.skipif(not HAS_NODE, reason="Node.js is required for connector tests")
 def test_on_status_and_engine_on_live_room_contract(tmp_path):
     fake = tmp_path / "room-hook.mjs"
     fake.write_text(
@@ -374,7 +380,7 @@ def test_on_status_and_engine_on_live_room_contract(tmp_path):
             return None
 
         bridge = LiveBridge(engine, publish, tmp_path, connector=fake, on_status=on_status)
-        await bridge.connect("akkkkk_224")
+        await bridge.connect("test_channel")
         assert await _wait_until(lambda: bridge.public()["status"] == "connected")
         await asyncio.sleep(0.05)
         await bridge.close()
@@ -385,7 +391,10 @@ def test_on_status_and_engine_on_live_room_contract(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for connector tests")
+@pytest.mark.skipif(
+    not HAS_NODE_CONNECTOR,
+    reason="Requires Node.js and npm dependencies (node_modules/piratetok-live-js)",
+)
 def test_real_connector_bad_username_exits_with_code_2():
     proc = subprocess.run(
         ["node", str(REAL_CONNECTOR), "bad name!"],
@@ -407,7 +416,10 @@ def test_real_connector_bad_username_exits_with_code_2():
     ]
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for connector tests")
+@pytest.mark.skipif(
+    not HAS_NODE_CONNECTOR,
+    reason="Requires Node.js and npm dependencies (node_modules/piratetok-live-js)",
+)
 def test_real_connector_offline_slardar_device_blocked_and_wss_protobuf(tmp_path):
     preload = tmp_path / "offline-hooks.mjs"
     wss_server_script = tmp_path / "wss-harness.mjs"

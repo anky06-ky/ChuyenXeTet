@@ -28,10 +28,32 @@ import {
   ProfileNotFoundError,
   randomUa,
 } from 'piratetok-live-js';
+// NOTE: piratetok-live-js@0.3.0 restricts package.json "exports" to "." (./dist/index.js),
+// blocking package subpath imports. Keep package.json strictly pinned to "piratetok-live-js": "0.3.0"
+// because these relative dist/ imports depend on 0.3.0 internal paths and signatures:
+//   - dist/connection/wss.js (connectWss) & dist/connection/url.js (buildWssUrl):
+//     Not exported from dist/index.js. Required so client.runSessions(...) can wrap runSession to
+//     reuse our { ttwid, userAgent } session + Accept-Language, call markConnected() on onOpen,
+//     and surface DeviceBlockedError (0.3.0 superviseSessions catches DeviceBlockedError without
+//     calling hooks.onError, otherwise masking it behind "disconnected before the WSS handshake completed").
+//   - dist/http/api.js (parseCheckOnline, fetchRoomInfoJson):
+//     Not exported from dist/index.js. checkOnline() cannot send a ttwid Cookie, custom headers, or
+//     AbortSignal for Tier-2 retries, so we fetch directly and reuse parseCheckOnline() status mapping.
+//     Public fetchRoomInfo() strips data.status via roomInfoFromJson(), whereas Tier-3 fallback needs
+//     raw data.status === 2 from fetchRoomInfoJson() when page JSON lacks an explicit live status.
+// WARNING: Do NOT bump piratetok-live-js past 0.3.0 without re-verifying these internal subpaths.
+// TODO(upstream PR): Export subpath hooks (or support custom session/header hooks on connect()/checkOnline()
+// plus raw room status on fetchRoomInfo()) and stop swallowing DeviceBlockedError in superviseSessions.
 import { connectWss } from '../node_modules/piratetok-live-js/dist/connection/wss.js';
 import { buildWssUrl } from '../node_modules/piratetok-live-js/dist/connection/url.js';
-import { abortableSleep } from '../node_modules/piratetok-live-js/dist/connection/supervisor.js';
 import { parseCheckOnline, fetchRoomInfoJson } from '../node_modules/piratetok-live-js/dist/http/api.js';
+
+const abortableSleep = (ms, signal) => new Promise((resolve) => {
+  if (signal?.aborted) return resolve();
+  const onAbort = () => { clearTimeout(timer); resolve(); };
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+  signal?.addEventListener('abort', onAbort, { once: true });
+});
 
 const emit = (message) => { process.stdout.write(JSON.stringify(message) + '\n'); };
 const status = (state, extra = {}) => emit({ t: 'status', status: state, ...extra });
