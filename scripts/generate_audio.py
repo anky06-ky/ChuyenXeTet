@@ -259,12 +259,58 @@ def effects() -> dict[str, list[list[float]]]:
     return result
 
 
-def write_wav(filename: str, channels: list[list[float]]) -> dict:
+def master_channels(
+    channels: list[list[float]],
+    *,
+    target_rms: float,
+    max_peak: float,
+    thresh: float,
+    ratio: float,
+    attack_ms: float,
+    release_ms: float,
+    circular: bool = False,
+) -> list[list[float]]:
+    """Apply smooth envelope compression and soft peak limiting to reach broadcast loudness."""
+    frames = len(channels[0])
+    peak0 = max(abs(value) for channel in channels for value in channel)
+    if not peak0:
+        return channels
+    norm = [[value / peak0 for value in channel] for channel in channels]
+    attack_alpha = 1.0 - math.exp(-1.0 / (attack_ms * 0.001 * SAMPLE_RATE))
+    release_alpha = 1.0 - math.exp(-1.0 / (release_ms * 0.001 * SAMPLE_RATE))
+    envelope = 0.0
+    if circular:
+        for index in range(frames):
+            level = max(abs(channel[index]) for channel in norm)
+            envelope += (attack_alpha if level > envelope else release_alpha) * (level - envelope)
+    compressed: list[list[float]] = [[] for _ in norm]
+    for index in range(frames):
+        level = max(abs(channel[index]) for channel in norm)
+        envelope += (attack_alpha if level > envelope else release_alpha) * (level - envelope)
+        gain = (thresh * ((envelope / thresh) ** (1.0 / ratio))) / envelope if envelope > thresh else 1.0
+        for channel_index, channel in enumerate(norm):
+            compressed[channel_index].append(channel[index] * gain)
+
+    cur_peak = max(abs(value) for channel in compressed for value in channel) or 1.0
+    cur_rms = math.sqrt(sum(value * value for channel in compressed for value in channel) / (frames * len(compressed))) or 1.0
+    scale = target_rms / cur_rms
+    if cur_peak * scale > max_peak:
+        output = [[max_peak * math.tanh((value * scale) / max_peak) for value in channel] for channel in compressed]
+        for _ in range(3):
+            peak_now = max(abs(value) for channel in output for value in channel) or 1.0
+            rms_now = math.sqrt(sum(value * value for channel in output for value in channel) / (frames * len(output))) or 1.0
+            if rms_now < target_rms and peak_now < max_peak:
+                boost = min(max_peak / peak_now, target_rms / rms_now)
+                output = [[value * boost for value in channel] for channel in output]
+        return output
+    return [[value * scale for value in channel] for channel in compressed]
+
+
+def write_wav(filename: str, channels: list[list[float]], *, max_peak: float = 0.90) -> dict:
     frames = len(channels[0])
     assert all(len(channel) == frames for channel in channels)
     peak = max(abs(value) for channel in channels for value in channel)
-    # Preserve deliberate mixing levels, with a ceiling only for accidental overs.
-    gain = min(1.0, 0.70 / peak) if peak else 1.0
+    gain = min(1.0, max_peak / peak) if peak else 1.0
     pcm = array("h", (
         round(max(-1.0, min(1.0, channels[channel][index] * gain)) * 32767)
         for index in range(frames) for channel in range(len(channels))
@@ -413,9 +459,24 @@ def main() -> None:
     parser.add_argument("--force-voices", action="store_true", help="Regenerate all speech, including existing valid clips (implies --voices)")
     args = parser.parse_args()
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    music = write_wav("office-loop.wav", office_music())
-    station_music_meta = write_wav("station-loop.wav", station_music())
-    sound_effects = {key: write_wav(f"{key}.wav", channels) for key, channels in effects().items()}
+    music = write_wav(
+        "office-loop.wav",
+        master_channels(office_music(), target_rms=0.18, max_peak=0.76, thresh=0.28, ratio=3.5, attack_ms=6.0, release_ms=140.0, circular=True),
+        max_peak=0.78,
+    )
+    station_music_meta = write_wav(
+        "station-loop.wav",
+        master_channels(station_music(), target_rms=0.18, max_peak=0.76, thresh=0.28, ratio=3.5, attack_ms=6.0, release_ms=140.0, circular=True),
+        max_peak=0.78,
+    )
+    sound_effects = {
+        key: write_wav(
+            f"{key}.wav",
+            master_channels(channels, target_rms=0.33, max_peak=0.88, thresh=0.14, ratio=5.0, attack_ms=2.0, release_ms=90.0),
+            max_peak=0.90,
+        )
+        for key, channels in effects().items()
+    }
     generated = {}
     if args.voices or args.force_voices:
         generated = asyncio.run(generate_voices(args.force_voices, args.voice_provider))

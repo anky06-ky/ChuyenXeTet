@@ -436,6 +436,18 @@ class BusStation:
                     db.execute("UPDATE buses SET full_at=NULL WHERE id=?", (bus["id"],))
             return results
 
+    def _clear_station_room_tx(self, db, now: float) -> dict:
+        """Clear un-departed station waiting queue, active seats and boarding buses for a new LIVE room."""
+        cleared_waiting = db.execute(
+            "UPDATE players SET entered_at=0, pending_route='', pending_at=0 "
+            "WHERE entered_at>0 OR pending_route<>'' OR pending_at>0"
+        ).rowcount
+        cleared_seats = db.execute("SELECT count(*) FROM seat_reservations WHERE status='active'").fetchone()[0]
+        db.execute("DELETE FROM seat_reservations WHERE bus_id IN (SELECT id FROM buses WHERE status='boarding')")
+        db.execute("UPDATE seat_reservations SET status='cancelled', updated_at=? WHERE status='active'", (now,))
+        cleared_buses = db.execute("DELETE FROM buses WHERE status='boarding'").rowcount
+        return {"cleared_waiting": cleared_waiting, "cleared_seats": cleared_seats, "cleared_buses": cleared_buses}
+
     def station_snapshot(self, db, session, now) -> dict:
         routes = []
         for route in ROUTES:

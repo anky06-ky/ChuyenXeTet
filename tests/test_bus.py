@@ -396,3 +396,60 @@ def test_ra_xe_boards_and_clear_demo_resets_rehearsal_clutter_cleanly(tmp_path):
         board = client.post("/api/live/simulate", json={"kind": "chat", "player_id": "tt_real", "nickname": "♐", "text": "ra xe"}).json()
         assert board["results"][0]["code"] == "SEATED" and board["results"][0]["ticket"]["seat"] == 1
         assert board["state"]["station"]["waiting"] == []
+
+
+def test_new_live_room_clears_old_waiting_and_boarding_seats_while_same_room_is_idempotent(tmp_path):
+    now = [1000.0]
+    path = tmp_path / "game.sqlite"
+    engine = station(tmp_path, now)
+
+    # Empty station has no demo or old-room viewers by default.
+    initial = engine.snapshot()
+    assert initial["station"]["waiting"] == []
+    assert all(all(s is None for s in r["bus"]["seats"]) for r in initial["station"]["routes"])
+    assert initial["stats"]["demo_players"] == 0
+
+    # Room 1: one departed bus, one un-departed boarding bus with 1 seated viewer, and 1 waiting viewer.
+    assert engine.on_live_room("room_1")["changed"]
+    assert engine.live_event("chat", "tt_dep", "Cũ Đi", "c_dep", text="Cà Mau")[-1]["code"] == "SEATED"
+    assert engine.control("depart", "depart_r1")["code"] == "DEPARTED"
+    assert engine.live_event("chat", "tt_seat", "Ngồi Chờ", "c_seat", text="ghế 4")[-1]["code"] == "SEATED"
+    assert engine.live_event("enter", "tt_wait", "Xếp Hàng", "e_wait")[0]["code"] == "ENTERED"
+    assert engine.live_event("like", "tt_wait", "Xếp Hàng", "l_wait", count=15)[0]["code"] == "LIKED"
+    engine.seed(2)
+
+    # Empty room_id or reconnecting to the same room_1 must be a no-op for active waiting/seats.
+    assert not engine.on_live_room("")["changed"]
+    same = engine.on_live_room("room_1")
+    assert not same["changed"]
+    snap_same = engine.snapshot()
+    assert [w["id"] for w in snap_same["station"]["waiting"]] == ["tt_wait"]
+    mt_same = next(r for r in snap_same["station"]["routes"] if r["code"] == "mien_tay")
+    assert mt_same["bus"]["seats"][3]["id"] == "tt_seat"
+
+    # Restarting engine and connecting to a NEW room_2 clears waiting queue, boarding seats & rehearsal rows,
+    # while preserving departed history and cumulative player profiles.
+    now[0] += 3600
+    restarted = GameEngine(path, clock=lambda: now[0])
+    assert not restarted.on_live_room("room_1")["changed"]
+    transition = restarted.on_live_room("room_2")
+    assert transition["changed"] and transition["previous_room_id"] == "room_1"
+    assert transition["cleared_waiting"] == 1 and transition["cleared_seats"] == 1 and transition["cleared_buses"] == 1
+
+    snap_new = restarted.snapshot()
+    assert snap_new["session"]["live_room_id"] == "room_2"
+    assert snap_new["station"]["waiting"] == []
+    mt_new = next(r for r in snap_new["station"]["routes"] if r["code"] == "mien_tay")
+    assert mt_new["bus"]["filled"] == 0 and all(s is None for s in mt_new["bus"]["seats"])
+    assert mt_new["bus"]["number"] == 2  # bus 1 already departed; old un-departed bus 2 was cleared cleanly
+    assert mt_new["departed_buses"] == 1 and mt_new["riders"] == 1
+    assert snap_new["stats"]["demo_players"] == 0
+    assert snap_new["stats"]["total_players"] == 3
+    by_id = {p["id"]: p for p in snap_new["players"]}
+    assert by_id["tt_wait"]["hearts"] == 15
+    assert by_id["tt_dep"]["coins"] == FIRST_TRIP_BONUS
+
+    # Returning viewer entering room_2 enters waiting queue cleanly again.
+    reenter = restarted.live_event("enter", "tt_wait", "Xếp Hàng", "e_r2")
+    assert reenter[0]["code"] == "ENTERED"
+    assert [w["id"] for w in restarted.snapshot()["station"]["waiting"]] == ["tt_wait"]

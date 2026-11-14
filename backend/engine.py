@@ -118,6 +118,8 @@ class GameEngine(BusStation):
             for column in ("hearts", "boosts"):
                 if column not in session_columns:
                     db.execute(f"ALTER TABLE sessions ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+            if "live_room_id" not in session_columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN live_room_id TEXT NOT NULL DEFAULT ''")
             player_columns = {row["name"] for row in db.execute("PRAGMA table_info(players)")}
             for column in ("mission_works", "missions_completed", "hearts", "gifts", "followed"):
                 if column not in player_columns:
@@ -544,6 +546,34 @@ class GameEngine(BusStation):
         with self.database() as db:
             db.execute("BEGIN IMMEDIATE")
             return self._clear_rehearsal_tx(db, reset_energy=True, only_if_present=only_if_present)
+
+    def on_live_room(self, room_id: str) -> dict:
+        """Reset transient station queue and un-departed seats when connecting to a new LIVE room; idempotent per room_id."""
+        room_id = str(room_id or "").strip()[:40]
+        if not room_id:
+            return {"ok": True, "changed": False, "room_id": "", "previous_room_id": ""}
+        now = self.clock()
+        with self.database() as db:
+            row = db.execute("SELECT live_room_id FROM sessions LIMIT 1").fetchone()
+            previous = str(row["live_room_id"] or "") if row else ""
+            if previous == room_id:
+                return {"ok": True, "changed": False, "room_id": room_id, "previous_room_id": previous}
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT live_room_id FROM sessions LIMIT 1").fetchone()
+            previous = str(row["live_room_id"] or "") if row else ""
+            if previous == room_id:
+                return {"ok": True, "changed": False, "room_id": room_id, "previous_room_id": previous}
+            cleared_rehearsal = self._clear_rehearsal_tx(db, reset_energy=True, only_if_present=True)
+            cleared_station = self._clear_station_room_tx(db, now)
+            db.execute("UPDATE sessions SET live_room_id=?, version=version+1", (room_id,))
+            return {
+                "ok": True,
+                "changed": True,
+                "room_id": room_id,
+                "previous_room_id": previous,
+                **cleared_station,
+                "cleared_rehearsal": cleared_rehearsal,
+            }
 
     def _clear_rehearsal_tx(self, db, *, reset_energy: bool = True, only_if_present: bool = False) -> dict:
         rehearsal_where = "(id GLOB 'demo_*' OR id GLOB 'manual_*' OR id GLOB 'rehearsal_*')"

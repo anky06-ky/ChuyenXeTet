@@ -70,7 +70,7 @@ export class OfficeScene extends Phaser.Scene {
         if (avatar.player.avatar === url) avatar.face.setTexture(key).setDisplaySize(FACE, FACE);
       }
     });
-    this.events.once('shutdown', () => { this.releaseFaces?.(); this.releaseReady?.(); });
+    this.events.once('shutdown', () => { this.ready = false; this.releaseFaces?.(); this.releaseReady?.(); });
     this.drawCoffeeCorner();
     this.desks = this.add.container(0, 0);
     for (let index = 0; index < 9; index++) {
@@ -84,6 +84,7 @@ export class OfficeScene extends Phaser.Scene {
     this.onCreated?.();
     // Names are drawn on canvas: wait for the Vietnamese subset so diacritics never fall back.
     void waitForFonts().finally(() => {
+      if (!this.sys?.settings || !(this.scene as { manager?: unknown } | undefined)?.manager) return;
       this.ready = true;
       if (this.pendingState) this.applyState(this.pendingState);
     });
@@ -424,21 +425,27 @@ export function createOffice(parent: HTMLElement, onSelect: (player: Player) => 
   office.onSelect = onSelect;
   let current: 'office' | 'station' = 'office';
   let stationLaunched = false;
+  let destroyed = false;
+
+  const canControlScene = (sceneObj: Phaser.Scene) =>
+    !destroyed && Boolean(sceneObj.sys?.settings && (sceneObj.scene as { manager?: unknown } | undefined)?.manager);
 
   const sync = () => {
+    if (destroyed) return;
     const inStation = current === 'station';
-    if (office.sys?.settings) {
+    if (canControlScene(office)) {
       office.scene.setVisible(!inStation);
       office.scene.setActive(!inStation);
       if (office.input) office.input.enabled = !inStation;
     }
-    if (stationLaunched && station.sys?.settings) {
+    if (stationLaunched && canControlScene(station)) {
       station.scene.setVisible(inStation);
       station.scene.setActive(inStation);
     }
   };
 
   office.onCreated = () => {
+    if (destroyed || !canControlScene(office)) return;
     office.scene.launch('station');
     stationLaunched = true;
     station.events.once('create', () => sync());
@@ -457,6 +464,7 @@ export function createOffice(parent: HTMLElement, onSelect: (player: Player) => 
     fps: { target: 30, forceSetTimeOut: true },
     audio: { noAudio: true },
   });
+  game.events.once(Phaser.Core.Events.DESTROY, () => { destroyed = true; });
 
   const applyCanvasSmoothing = () => {
     const renderer = game.renderer;
@@ -472,12 +480,14 @@ export function createOffice(parent: HTMLElement, onSelect: (player: Player) => 
 
   const scene = {
     applyState(state: GameState) {
+      if (destroyed) return;
       current = state.session.scene === 'station' ? 'station' : 'office';
       sync();
       if (current === 'station') station.applyState(state);
       else office.applyState(state);
     },
     react(event: GameResult) {
+      if (destroyed) return;
       if (current === 'station') station.react(event);
       else office.react(event);
     },

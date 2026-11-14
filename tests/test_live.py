@@ -282,7 +282,7 @@ def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
             batches.append(results)
 
         bridge = LiveBridge(engine, publish, tmp_path, connector=fake)
-        # Speed up the 3s NOT_LIVE retry check while verifying delay == 3 is requested.
+        # Speed up the polite NOT_LIVE retry check while verifying 5.0..6.5s first delay is requested.
         orig_retry = bridge._retry
         observed_delays = []
 
@@ -298,7 +298,7 @@ def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
                 break
         status = bridge.public()
         await bridge.close()
-        assert observed_delays == [3]
+        assert len(observed_delays) == 1 and 5.0 <= observed_delays[0] <= 6.5
         assert status["unique_id"] == "akkkkk_224"
         assert status["status"] == "connected"
         assert status["counters"]["chat"] == 30
@@ -427,6 +427,7 @@ def test_app_autoconnects_on_startup_and_clears_rehearsal_on_connected(tmp_path,
     monkeypatch.setenv("TETLIVE_CHANNEL", "@akkkkk_224")
 
     with TestClient(create_app(db_path, connector=fake)) as client:
+        assert client.app.state.live.on_status is not None
         deadline = time.monotonic() + 5.0
         state = client.get("/api/state").json()
         while time.monotonic() < deadline:
@@ -448,3 +449,85 @@ def test_app_autoconnects_on_startup_and_clears_rehearsal_on_connected(tmp_path,
         after = client.get("/api/state").json()
         assert after["stats"]["total_players"] == 2
         assert after["energy"]["hearts"] == 5
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for the connector process")
+def test_app_clears_prior_stream_waiting_and_seats_when_new_room_connects(tmp_path, monkeypatch):
+    import sqlite3
+    import time
+
+    db_path = tmp_path / "game.sqlite"
+    seed_engine = GameEngine(db_path)
+    seed_engine.control("scene_station", "open_station")
+    seed_engine.live_event("enter", "tt_6928665283280323586", "🦭", "old_e1")
+    seed_engine.live_event("chat", "tt_6926507410044486658", "♉", "old_c1", text="ghế 3")
+    seed_engine.live_event("like", "tt_6926507410044486658", "♉", "old_l1", count=3)
+    # Simulate an existing DB migrated from before live_room_id existed (old waiting + old seat).
+    with sqlite3.connect(db_path) as db:
+        db.execute("UPDATE sessions SET live_room_id=''")
+        db.execute("UPDATE players SET entered_at=1794578059.0 WHERE id='tt_6928665283280323586'")
+    assert len(seed_engine.snapshot()["station"]["waiting"]) == 1
+
+    fake = tmp_path / "multi-room.mjs"
+    marker = tmp_path / "room-seq.txt"
+    fake.write_text(f"""
+        import fs from 'node:fs';
+        import readline from 'node:readline';
+        const marker = {marker.as_posix()!r};
+        const seq = (fs.existsSync(marker) ? Number(fs.readFileSync(marker, 'utf8')) : 0) + 1;
+        fs.writeFileSync(marker, String(seq));
+        const roomId = seq === 1 ? 'room_today_1' : 'room_today_2';
+        const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
+        send({{ t: 'status', status: 'connecting', uniqueId: process.argv[2] }});
+        send({{ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId }});
+        if (seq === 1) {{
+            setTimeout(() => {{
+                send({{ t: 'join', id: '0', user: {{ id: '555', uniqueId: 'fresh.viewer', nickname: 'Khách Mới', avatar: '' }} }});
+            }}, 80);
+            setTimeout(() => {{
+                send({{ t: 'status', status: 'reconnecting', uniqueId: process.argv[2] }});
+                send({{ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId: 'room_today_1' }});
+            }}, 220);
+        }}
+        readline.createInterface({{ input: process.stdin }}).on('line', (line) => {{ if (line.trim() === 'quit') process.exit(0); }});
+    """, encoding="utf-8")
+
+    monkeypatch.setenv("TETLIVE_NO_AUTOCONNECT", "0")
+    monkeypatch.setenv("TETLIVE_CHANNEL", "@akkkkk_224")
+
+    with TestClient(create_app(db_path, connector=fake)) as client:
+        assert client.app.state.live.on_status is not None
+        deadline = time.monotonic() + 5.0
+        state = client.get("/api/state").json()
+        while time.monotonic() < deadline:
+            state = client.get("/api/state").json()
+            waiting_ids = [w["id"] for w in state["station"]["waiting"]]
+            if state["live"]["room_id"] == "room_today_1" and waiting_ids == ["tt_555"]:
+                break
+            time.sleep(0.05)
+
+        assert state["live"]["status"] == "connected"
+        assert state["session"]["live_room_id"] == "room_today_1"
+        assert [w["id"] for w in state["station"]["waiting"]] == ["tt_555"]
+        mt_seats = next(r for r in state["station"]["routes"] if r["code"] == "mien_tay")["bus"]["seats"]
+        assert all(s is None for s in mt_seats)
+        # Old viewers' cumulative profiles are preserved even though their stale queue/seat was cleared.
+        assert state["stats"]["total_players"] == 3
+
+        # Same-room reconnect preserves current stream's waiting queue.
+        time.sleep(0.3)
+        after_reconnect = client.get("/api/state").json()
+        assert [w["id"] for w in after_reconnect["station"]["waiting"]] == ["tt_555"]
+
+        # Connecting to a new room_id clears room_today_1's waiting queue immediately.
+        with client.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["type"] == "snapshot"
+            client.post("/api/live/connect", json={"unique_id": "@akkkkk_224"})
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                state2 = client.get("/api/state").json()
+                if state2["live"]["status"] == "connected" and state2["live"]["room_id"] == "room_today_2":
+                    break
+                time.sleep(0.05)
+            assert state2["session"]["live_room_id"] == "room_today_2"
+            assert state2["station"]["waiting"] == []

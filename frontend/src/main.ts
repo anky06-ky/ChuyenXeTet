@@ -197,7 +197,7 @@ app.innerHTML = `
             <div class="capacity-note"><span id="player-count">0</span> hồ sơ người xem <span>·</span> <span id="sample-count">0</span> nhân vật mẫu</div><p class="demo-disclosure" id="audience-note">Chưa kết nối TikTok. Đây là dữ liệu chơi thử.</p>
           </section>
         </div>
-        <div id="panel-audio" role="tabpanel" aria-labelledby="tab-audio" hidden><section class="panel audio-panel"><div class="audio-illustration">♫ <span>✦</span></div><div class="audio-heading"><span class="eyebrow">ÂM THANH CỦA NHỮNG NGÀY CUỐI NĂM</span><h2>Cho công ty & bến xe<br>thêm rộn ràng.</h2><p>Nhạc xuân, tiếng còi xe Tết, pháo hoa xuất bến và lời nhắc vui.</p></div><button class="button button-primary" id="enable-audio">${icon('volume')} Bật âm thanh</button><p class="audio-status" id="audio-status">Bật một lần để bắt đầu nghe.</p><div class="mixer"><label>${icon('music')} Nhạc nền <output id="music-value">25%</output><input id="music-volume" type="range" min="0" max="100" value="25" aria-label="Âm lượng nhạc nền" /></label><label>${icon('bell')} Hiệu ứng <output id="effects-value">60%</output><input id="effects-volume" type="range" min="0" max="100" value="60" aria-label="Âm lượng hiệu ứng" /></label><label>${icon('mic')} Giọng nói <output id="voice-value">80%</output><input id="voice-volume" type="range" min="0" max="100" value="80" aria-label="Âm lượng giọng nói" /></label></div><div class="sound-test-label">NGHE THỬ MỘT CHÚT</div><div class="sound-tests"><button data-sound="horn">${icon('bus')} Còi xe Tết</button><button data-sound="depart">${icon('road')} Xuất bến</button><button data-sound="work">${icon('sparkles')} Đạt KPI</button><button data-sound="salary">${icon('coin')} Nhận lương</button><button data-sound="coffee">${icon('coffee')} Cà phê</button><button data-sound="boss">${icon('mic')} Sếp gọi</button></div><div class="audio-note">Giọng nói lần lượt phát từng câu. Nhạc nền tự chuyển theo Công ty hoặc Bến xe Tết.</div></section></div>
+        <div id="panel-audio" role="tabpanel" aria-labelledby="tab-audio" hidden><section class="panel audio-panel"><div class="audio-illustration">♫ <span>✦</span></div><div class="audio-heading"><span class="eyebrow">ÂM THANH CỦA NHỮNG NGÀY CUỐI NĂM</span><h2>Cho công ty & bến xe<br>thêm rộn ràng.</h2><p>Nhạc xuân, tiếng còi xe Tết, pháo hoa xuất bến và lời nhắc vui.</p></div><button class="button button-primary" id="enable-audio">${icon('volume')} Bật âm thanh</button><p class="audio-status" id="audio-status">Bật một lần để bắt đầu nghe.</p><div class="mixer"><label>${icon('music')} Nhạc nền <output id="music-value">65%</output><input id="music-volume" type="range" min="0" max="100" value="65" aria-label="Âm lượng nhạc nền" /></label><label>${icon('bell')} Hiệu ứng <output id="effects-value">75%</output><input id="effects-volume" type="range" min="0" max="100" value="75" aria-label="Âm lượng hiệu ứng" /></label><label>${icon('mic')} Giọng nói <output id="voice-value">92%</output><input id="voice-volume" type="range" min="0" max="100" value="92" aria-label="Âm lượng giọng nói" /></label></div><div class="sound-test-label">NGHE THỬ MỘT CHÚT</div><div class="sound-tests"><button data-sound="horn">${icon('bus')} Còi xe Tết</button><button data-sound="depart">${icon('road')} Xuất bến</button><button data-sound="work">${icon('sparkles')} Đạt KPI</button><button data-sound="salary">${icon('coin')} Nhận lương</button><button data-sound="coffee">${icon('coffee')} Cà phê</button><button data-sound="boss">${icon('mic')} Sếp gọi</button></div><div class="audio-note">Giọng nói lần lượt phát từng câu. Nhạc nền tự chuyển theo Công ty hoặc Bến xe Tết.</div></section></div>
         <section class="activity-section"><div class="section-label">VỪA XẢY RA <span class="activity-live"><i class="status-dot"></i> Theo thời gian thực</span></div><ol id="activity-list"><li class="empty-small">Một ngày làm việc mới đang bắt đầu.</li></ol></section>
       </aside>
     </main>
@@ -216,6 +216,7 @@ let simulation: ReturnType<typeof setInterval> | undefined;
 let ticking = false;
 let busy = false;
 let liveBusy = false;
+let destroyed = false;
 let toastTimer: ReturnType<typeof setTimeout>;
 let selectedPlayer: Player | undefined;
 let lastNoticeAt = 0;
@@ -483,6 +484,7 @@ function renderLive(live: LiveStatus) {
 }
 
 function processEvent(event: GameResult, shouldNotify = true) {
+  if (destroyed) return;
   const key = event.event_id || (event.seq ? `seq_${event.seq}` : undefined);
   const notify = shouldNotify && event.code !== 'IDLE' && Boolean(event.message);
   if (key && seenEvents.has(key)) {
@@ -518,6 +520,7 @@ function feedback(event: GameResult) {
 }
 
 function setState(next: GameState, events: GameResult[] = []) {
+  if (destroyed) return;
   if (state && state.session.id === next.session.id && next.session.version < state.session.version) return;
   const previousScene = state?.session.scene;
   state = next;
@@ -589,6 +592,7 @@ function setState(next: GameState, events: GameResult[] = []) {
 }
 
 function connectionStatus(connected: boolean) {
+  if (destroyed) return;
   online = connected;
   for (const id of ['send-command', 'seed-button', 'pause-button', 'clear-demo-button']) $<HTMLButtonElement>(`#${id}`).disabled = !connected;
   if (!connected) $('#save-status').textContent = 'Đang kết nối lại · hồ sơ đã lưu được giữ nguyên';
@@ -771,10 +775,12 @@ for (const tab of ['control', 'audio']) {
 }
 
 function renderAudio() {
-  $('#enable-audio').innerHTML = `${icon(audio.enabled && !audio.muted ? 'mute' : 'volume')} ${audio.enabled && !audio.muted ? 'Tắt âm thanh' : 'Bật âm thanh'}`;
+  if (destroyed) return;
+  const active = ((audio.enabled && audio.contextState === 'running') || audio.fallbackPlaying) && !audio.muted;
+  $('#enable-audio').innerHTML = `${icon(active ? 'mute' : 'volume')} ${active ? 'Tắt âm thanh' : 'Bật âm thanh'}`;
   $('#audio-status').textContent = audio.status.label;
-  $('#overlay-audio').classList.toggle('audio-on', audio.enabled && !audio.muted);
-  $('#overlay-audio').setAttribute('aria-label', audio.enabled && !audio.muted ? 'Tắt âm thanh overlay' : 'Bật âm thanh overlay');
+  $('#overlay-audio').classList.toggle('audio-on', active);
+  $('#overlay-audio').setAttribute('aria-label', active ? 'Tắt âm thanh overlay' : 'Bật âm thanh overlay');
   for (const channel of ['music', 'effects', 'voice'] as const) {
     const value = Math.round(audio.volumes[channel] * 100);
     $<HTMLInputElement>(`#${channel}-volume`).value = String(value);
@@ -784,8 +790,18 @@ function renderAudio() {
 
 async function enableAudio() {
   try {
-    if (!audio.enabled) { await audio.enable(); audio.say(state?.session.scene === 'station' ? 'station' : 'welcome'); }
-    else audio.setMuted(!audio.muted);
+    if (!audio.enabled || audio.contextState !== 'running') {
+      const wasFallbackActive = audio.fallbackPlaying && !audio.muted;
+      if (audio.muted) audio.setMuted(false);
+      await audio.enable();
+      if (audio.contextState === 'running' && audio.enabled && !audio.muted) {
+        audio.say(state?.session.scene === 'station' ? 'station' : 'welcome');
+      } else if (wasFallbackActive && audio.contextState !== 'running') {
+        audio.setMuted(true);
+      }
+    } else {
+      audio.setMuted(!audio.muted);
+    }
     renderAudio();
   } catch { toast('Trình duyệt chưa cho phát âm thanh. Bấm bật lại giúp mình nhé.'); }
 }
@@ -795,7 +811,7 @@ for (const channel of ['music', 'effects', 'voice'] as const) {
   $(`#${channel}-volume`).addEventListener('input', (event) => { audio.setVolume(channel, Number((event.target as HTMLInputElement).value) / 100); renderAudio(); });
 }
 document.querySelectorAll<HTMLButtonElement>('[data-sound]').forEach((button) => button.addEventListener('click', async () => {
-  if (!audio.enabled) await audio.enable();
+  if (!audio.enabled || audio.contextState !== 'running') await audio.enable();
   if (audio.muted) audio.setMuted(false);
   const cue = button.dataset.sound as 'work' | 'salary' | 'coffee' | 'boss' | 'horn' | 'depart';
   audio.play(cue);
@@ -819,15 +835,22 @@ help.addEventListener('click', (event) => { if (event.target === help) { const b
 const connection = new LiveConnection(setState, connectionStatus);
 audio.onStatus = () => renderAudio();
 renderAudio();
-if (overlayMode) {
-  void audio.enable({ autoplay: true }).then(renderAudio);
-  document.addEventListener('pointerdown', (event) => {
-    if (!audio.enabled && !(event.target as HTMLElement | null)?.closest('#overlay-audio')) {
-      void enableAudio();
-    }
-  });
+const unlockAudioFromGesture = (event: Event) => {
+  if (destroyed) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('#enable-audio, #overlay-audio')) return;
+  if (audio.muted) return;
+  if (!audio.enabled || audio.contextState !== 'running') {
+    void audio.enable().then(() => { if (!destroyed) renderAudio(); });
+  }
+};
+void audio.enable({ autoplay: true }).then(() => { if (!destroyed) renderAudio(); });
+const UNLOCK_EVENTS = ['pointerdown', 'mousedown', 'touchstart', 'keydown', 'click'] as const;
+for (const eventName of UNLOCK_EVENTS) {
+  window.addEventListener(eventName, unlockAudioFromGesture, { passive: true, capture: true });
 }
 void request<GameState>('/api/state').then((initialState) => {
+  if (destroyed) return;
   setState(initialState);
   // Opening a page never invents participants or advances the round.
   // In a real desktop browser (not headless WebDriver tests), auto-connect to the pre-filled TikTok channel if idle.
@@ -837,9 +860,19 @@ void request<GameState>('/api/state').then((initialState) => {
 }).catch(() => connectionStatus(false));
 
 const hintTimer = setInterval(() => {
-  if (!state?.session.paused && !captionTimer && Date.now() - lastNoticeAt > 14000) {
+  if (!destroyed && !state?.session.paused && !captionTimer && Date.now() - lastNoticeAt > 14000) {
     const list = state?.session.scene === 'station' ? STATION_HINTS : HINTS;
     showCaption(list[++hintIndex % list.length]);
   }
 }, 7000);
-window.addEventListener('beforeunload', () => { clearInterval(simulation); clearInterval(hintTimer); connection.dispose(); audio.dispose(); office.game.destroy(true); });
+window.addEventListener('beforeunload', () => {
+  destroyed = true;
+  for (const eventName of UNLOCK_EVENTS) {
+    window.removeEventListener(eventName, unlockAudioFromGesture, { capture: true });
+  }
+  clearInterval(simulation);
+  clearInterval(hintTimer);
+  connection.dispose();
+  audio.dispose();
+  office.game.destroy(true);
+});

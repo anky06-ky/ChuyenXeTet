@@ -114,7 +114,7 @@ export class StationScene extends Phaser.Scene {
       for (const seat of this.seats) if (seat.occupant?.avatar === url) seat.face.setTexture(key).setDisplaySize(FACE_SIZE, FACE_SIZE);
       for (const waiter of this.waiters.values()) if (waiter.viewer.avatar === url) waiter.face.setTexture(key).setDisplaySize(WAIT_FACE, WAIT_FACE);
     });
-    this.events.once('shutdown', () => { this.releaseFaces?.(); this.releaseReady?.(); });
+    this.events.once('shutdown', () => { this.ready = false; this.releaseFaces?.(); this.releaseReady?.(); });
     for (let index = 0; index < 7; index++) {
       const glow = this.add.image(80 + index * 153, 100 + (index % 2) * 30, 'spark').setDepth(1).setDisplaySize(90, 90).setAlpha(0.24);
       this.tweens.add({ targets: glow, alpha: 0.5, scale: glow.scale * 1.15, duration: 1500 + index * 180, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
@@ -133,7 +133,7 @@ export class StationScene extends Phaser.Scene {
       },
     });
     void waitForFonts().finally(() => {
-      if (!this.sys?.settings) return;
+      if (!this.sys?.settings || !(this.scene as { manager?: unknown } | undefined)?.manager) return;
       if (!this.textures.exists('station-bg')) this.buildBackground();
       this.add.image(0, 0, 'station-bg').setOrigin(0, 0).setDepth(0);
       this.buildLed();

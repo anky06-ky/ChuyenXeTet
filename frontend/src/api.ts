@@ -23,14 +23,20 @@ export class LiveConnection {
   }
 
   private connect() {
+    if (this.closed) return;
     const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
     this.socket = socket;
     socket.onopen = () => {
+      if (this.closed) {
+        socket.close();
+        return;
+      }
       this.delay = 1000;
       this.onConnection(true);
       this.heartbeat = setInterval(() => { if (socket.readyState === WebSocket.OPEN) socket.send('ping'); }, 20000);
     };
     socket.onmessage = (message) => {
+      if (this.closed) return;
       try {
         const data = JSON.parse(message.data);
         // Manual commands carry one `event`; LIVE batches carry an ordered `events` list.
@@ -40,11 +46,10 @@ export class LiveConnection {
     };
     socket.onclose = () => {
       clearInterval(this.heartbeat);
+      if (this.closed) return;
       this.onConnection(false);
-      if (!this.closed) {
-        this.retry = setTimeout(() => this.connect(), this.delay);
-        this.delay = Math.min(10000, this.delay * 1.5);
-      }
+      this.retry = setTimeout(() => this.connect(), this.delay);
+      this.delay = Math.min(10000, this.delay * 1.5);
     };
     socket.onerror = () => socket.close();
   }
@@ -53,6 +58,13 @@ export class LiveConnection {
     this.closed = true;
     clearTimeout(this.retry);
     clearInterval(this.heartbeat);
-    this.socket?.close();
+    if (this.socket) {
+      this.socket.onopen = null;
+      this.socket.onmessage = null;
+      this.socket.onclose = null;
+      this.socket.onerror = null;
+      this.socket.close();
+      this.socket = undefined;
+    }
   }
 }

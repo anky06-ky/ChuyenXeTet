@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import os
 import re
 import sys
@@ -113,9 +114,18 @@ def create_app(database_path: str | Path | None = None, connector: Path | None =
     avatar_jobs: dict[str, asyncio.Task] = {}
     avatar_slots = asyncio.Semaphore(4)
 
+    def sync_live_room(live: dict | None = None) -> None:
+        info = live if live is not None else app.state.live.public()
+        if info.get("status") == "connected" and info.get("room_id"):
+            app.state.engine.on_live_room(info["room_id"])
+
+    def on_live_status(live: dict) -> None:
+        sync_live_room(live)
+
     def snapshot() -> dict:
-        state = app.state.engine.snapshot()
         live = app.state.live.public()
+        sync_live_room(live)
+        state = app.state.engine.snapshot()
         state["live"] = live
         if live["status"] in ("connected", "reconnecting"):
             state["mode"] = "live"
@@ -131,6 +141,7 @@ def create_app(database_path: str | Path | None = None, connector: Path | None =
 
     async def publish_many(results: list[dict]):
         """One state broadcast for a batch of LIVE results; an empty batch announces a status change."""
+        sync_live_room()
         await broadcast({"type": "state", "state": snapshot(), "events": results})
 
     async def depart_watch():
@@ -148,7 +159,8 @@ def create_app(database_path: str | Path | None = None, connector: Path | None =
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.engine = GameEngine(database)
-        app.state.live = LiveBridge(app.state.engine, publish_many, ROOT, connector=connector)
+        live_kwargs = {"on_status": on_live_status} if "on_status" in inspect.signature(LiveBridge.__init__).parameters else {}
+        app.state.live = LiveBridge(app.state.engine, publish_many, ROOT, connector=connector, **live_kwargs)
         depart_task = asyncio.create_task(depart_watch())
         auto_channel = os.getenv("TETLIVE_CHANNEL", "akkkkk_224").strip()
         if os.getenv("TETLIVE_NO_AUTOCONNECT", "").strip() != "1" and auto_channel:
@@ -219,7 +231,9 @@ def create_app(database_path: str | Path | None = None, connector: Path | None =
 
     @app.get("/api/live/status")
     async def live_status():
-        return app.state.live.public()
+        live = app.state.live.public()
+        sync_live_room(live)
+        return live
 
     @app.post("/api/live/connect")
     async def live_connect(body: ConnectInput):

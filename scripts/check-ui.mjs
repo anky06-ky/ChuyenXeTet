@@ -32,6 +32,7 @@ let server2;
 let serverLog = '';
 server.stderr.on('data', chunk => { serverLog = (serverLog + chunk.toString()).slice(-4000); });
 let browser;
+let autoplayBrowser;
 const failures = [];
 const inspect = async (page, name) => {
   page.on('pageerror', error => failures.push(`${name}: ${error.message}`));
@@ -106,11 +107,16 @@ try {
   await expect(page.locator('#game-canvas canvas')).toBeVisible();
   await page.waitForTimeout(2500);
   await page.screenshot({ path: path.join(artifacts, 'open-office-empty.png'), fullPage: true });
+  await expect(page.locator('#music-value')).toHaveText('65%');
+  await expect(page.locator('#effects-value')).toHaveText('75%');
+  await expect(page.locator('#voice-value')).toHaveText('92%');
 
   // Comments from the rehearsal box follow the same rules as TikTok chat.
   await page.locator('#nickname').fill('Kiểm thử Tết');
   await page.locator('[data-command="vào làm"]').click();
   await expect(page.locator('#command-feedback')).toContainText('đã vào công ty');
+  await expect(page.locator('#enable-audio')).toContainText('Tắt âm thanh', { timeout: 15000 });
+  await expect(page.locator('#audio-status')).toContainText('Âm thanh sẵn sàng');
   await page.locator('#comment').fill('2');
   await page.locator('#send-command').click();
   await expect(page.locator('#player-profile')).toContainText('10 KPI');
@@ -158,8 +164,12 @@ try {
   await expect(page.locator('#live-state')).toHaveText('CHƯA KẾT NỐI ĐƯỢC');
 
   await page.locator('#tab-audio').click();
-  await page.locator('#enable-audio').click();
   await expect(page.locator('#enable-audio')).toContainText('Tắt âm thanh', { timeout: 15000 });
+  // Clicking #enable-audio toggles mute/unmute cleanly once audio is running.
+  await page.locator('#enable-audio').click();
+  await expect(page.locator('#enable-audio')).toContainText('Bật âm thanh');
+  await page.locator('#enable-audio').click();
+  await expect(page.locator('#enable-audio')).toContainText('Tắt âm thanh');
   for (const cue of ['horn', 'depart', 'work', 'salary', 'coffee', 'boss']) await page.locator(`[data-sound="${cue}"]`).click();
   await page.locator('#music-volume').evaluate(element => { element.value = '18'; element.dispatchEvent(new Event('input', { bubbles: true })); });
   await expect(page.locator('#music-value')).toHaveText('18%');
@@ -464,10 +474,239 @@ try {
   assert(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'Mobile layout overflows horizontally');
   await mobile.waitForTimeout(2500);
   await mobile.screenshot({ path: path.join(artifacts, 'mobile.png'), fullPage: true });
+
+  // Verify ?overlay=1 with --autoplay-policy=no-user-gesture-required auto-enables audible Web Audio with zero clicks.
+  autoplayBrowser = await chromium.launch({
+    headless: true,
+    executablePath: executables.find(existsSync),
+    args: ['--autoplay-policy=no-user-gesture-required'],
+  });
+  const autoplayContext = await autoplayBrowser.newContext({ viewport: { width: 1080, height: 1920 } });
+  const autoplayPage = await autoplayContext.newPage();
+  await inspect(autoplayPage, 'overlay-autoplay');
+  const audioResponses = new Map();
+  autoplayPage.on('response', (response) => {
+    const pathname = new URL(response.url()).pathname;
+    if (pathname.startsWith('/audio/')) audioResponses.set(pathname, response.status());
+  });
+  await autoplayPage.addInitScript(() => {
+    const NativeCtx = window.AudioContext || window.webkitAudioContext;
+    if (!NativeCtx) return;
+    const probe = { contexts: [], gains: [], analyser: null };
+    window.__audioProbe = probe;
+    const origConnect = AudioNode.prototype.connect;
+    const origCreateGain = NativeCtx.prototype.createGain;
+    NativeCtx.prototype.createGain = function (...args) {
+      const gain = origCreateGain.apply(this, args);
+      probe.gains.push(gain);
+      return gain;
+    };
+    function PatchedAudioContext(...args) {
+      const ctx = new NativeCtx(...args);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      origConnect.call(analyser, ctx.destination);
+      ctx.__probeAnalyser = analyser;
+      probe.contexts.push(ctx);
+      probe.analyser = analyser;
+      return ctx;
+    }
+    PatchedAudioContext.prototype = NativeCtx.prototype;
+    AudioNode.prototype.connect = function (dest, ...rest) {
+      const ctx = this.context;
+      if (ctx && ctx.__probeAnalyser && this !== ctx.__probeAnalyser && dest === ctx.destination) {
+        return origConnect.call(this, ctx.__probeAnalyser, ...rest);
+      }
+      return origConnect.call(this, dest, ...rest);
+    };
+    window.AudioContext = PatchedAudioContext;
+    if (window.webkitAudioContext) window.webkitAudioContext = PatchedAudioContext;
+  });
+  await autoplayPage.goto(`${base}/?overlay=1`);
+  await expect(autoplayPage.locator('#overlay-audio')).toHaveClass(/audio-on/, { timeout: 15000 });
+  await expect.poll(() => audioResponses.get('/audio/audio-manifest.json'), { timeout: 10000 }).toBe(200);
+  await expect.poll(() => audioResponses.get('/audio/office-loop.wav'), { timeout: 10000 }).toBe(200);
+  await expect.poll(() => audioResponses.get('/audio/station-loop.wav'), { timeout: 10000 }).toBe(200);
+  await expect.poll(() => audioResponses.get('/audio/horn.wav'), { timeout: 10000 }).toBe(200);
+  await expect.poll(() => audioResponses.get('/audio/voice-station.mp3'), { timeout: 10000 }).toBe(200);
+  for (const [assetPath, status] of audioResponses.entries()) {
+    assert.equal(status, 200, `Expected HTTP 200 for ${assetPath}`);
+  }
+  await autoplayPage.waitForTimeout(700);
+  const signal = await autoplayPage.evaluate(async () => {
+    const probe = window.__audioProbe;
+    if (!probe || !probe.contexts.length || !probe.analyser) return { ok: false, reason: 'missing audio probe' };
+    const ctx = probe.contexts[0];
+    const buf = new Float32Array(probe.analyser.fftSize);
+    let maxPeak = 0;
+    let maxRms = 0;
+    for (let sample = 0; sample < 8; sample++) {
+      probe.analyser.getFloatTimeDomainData(buf);
+      let sq = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const abs = Math.abs(buf[i]);
+        if (abs > maxPeak) maxPeak = abs;
+        sq += buf[i] * buf[i];
+      }
+      const rms = Math.sqrt(sq / buf.length);
+      if (rms > maxRms) maxRms = rms;
+      await new Promise(resolve => setTimeout(resolve, 60));
+    }
+    const gainValues = probe.gains.map(g => Number(g.gain.value.toFixed(3)));
+    return { ok: true, state: ctx.state, maxPeak, maxRms, gainValues };
+  });
+  assert(signal.ok, `Overlay audio probe failed: ${signal.reason}`);
+  assert.equal(signal.state, 'running', 'Overlay AudioContext must auto-start in running state');
+  assert(signal.gainValues.some(v => v >= 0.5), `Expected non-zero music gain >= 0.5, got ${JSON.stringify(signal.gainValues)}`);
+  assert(signal.maxPeak > 0.02 && signal.maxRms > 0.005, `Expected audible non-zero overlay output, got peak=${signal.maxPeak} rms=${signal.maxRms}`);
+  await autoplayPage.close();
+
+  // Verify suspended-context fallback (<audio> BGM) and 1500ms watchdog recovery without double-play.
+  const watchdogPage = await autoplayContext.newPage();
+  await inspect(watchdogPage, 'overlay-watchdog');
+  await watchdogPage.addInitScript(() => {
+    const NativeCtx = window.AudioContext || window.webkitAudioContext;
+    const NativeAudio = window.Audio;
+    window.__watchdogProbe = { resumeCalls: 0, allowWatchdogResume: false, contexts: [], audios: [] };
+    window.Audio = function (...args) {
+      const el = new NativeAudio(...args);
+      window.__watchdogProbe.audios.push(el);
+      return el;
+    };
+    window.Audio.prototype = NativeAudio.prototype;
+    if (!NativeCtx) return;
+    const origResume = NativeCtx.prototype.resume;
+    const stateDesc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(NativeCtx.prototype), 'state')
+      || Object.getOwnPropertyDescriptor(NativeCtx.prototype, 'state');
+    NativeCtx.prototype.resume = function (...args) {
+      window.__watchdogProbe.resumeCalls += 1;
+      if (!window.__watchdogProbe.allowWatchdogResume || window.__watchdogProbe.resumeCalls === 1) {
+        return Promise.resolve();
+      }
+      this.__fakeSuspended = false;
+      return origResume.apply(this, args).then((result) => {
+        this.dispatchEvent(new Event('statechange'));
+        return result;
+      });
+    };
+    function TrackedContext(...args) {
+      const ctx = new NativeCtx(...args);
+      ctx.__fakeSuspended = true;
+      Object.defineProperty(ctx, 'state', {
+        configurable: true,
+        get() {
+          return this.__fakeSuspended ? 'suspended' : (stateDesc?.get ? stateDesc.get.call(this) : 'running');
+        },
+      });
+      window.__watchdogProbe.contexts.push(ctx);
+      return ctx;
+    }
+    TrackedContext.prototype = NativeCtx.prototype;
+    window.AudioContext = TrackedContext;
+    if (window.webkitAudioContext) window.webkitAudioContext = TrackedContext;
+  });
+  await watchdogPage.goto(`${base}/?overlay=1`);
+  await expect.poll(async () => watchdogPage.evaluate(() => ({
+    state: window.__watchdogProbe.contexts[0]?.state ?? 'none',
+    fallbackPlaying: window.__watchdogProbe.audios.some(a => !a.paused),
+  })), { timeout: 6000 }).toEqual({ state: 'suspended', fallbackPlaying: true });
+  await expect(watchdogPage.locator('#overlay-audio')).toHaveClass(/audio-on/, { timeout: 6000 });
+  const preHandoverResumes = await watchdogPage.evaluate(() => {
+    const calls = window.__watchdogProbe.resumeCalls;
+    window.__watchdogProbe.allowWatchdogResume = true;
+    return calls;
+  });
+  assert(preHandoverResumes >= 1, `Expected initial resume attempt before handover, got ${preHandoverResumes}`);
+  await expect.poll(async () => watchdogPage.evaluate((baseline) => ({
+    state: window.__watchdogProbe.contexts[0]?.state ?? 'none',
+    anyFallbackPlaying: window.__watchdogProbe.audios.some(a => !a.paused),
+    resumedByWatchdog: window.__watchdogProbe.resumeCalls > baseline,
+  }), preHandoverResumes), { timeout: 8000 }).toEqual({ state: 'running', anyFallbackPlaying: false, resumedByWatchdog: true });
+  await expect(watchdogPage.locator('#overlay-audio')).toHaveClass(/audio-on/);
+  await watchdogPage.close();
+
+  // Verify normal "/" under strict user-activation gating stays locked before gesture and unlocks on first click anywhere without opening #tab-audio.
+  const strictContext = await browser.newContext({ viewport: { width: 1440, height: 1080 } });
+  try {
+    const strictPage = await strictContext.newPage();
+    await inspect(strictPage, 'desktop-first-click');
+    await strictPage.addInitScript(() => {
+      const NativeCtx = window.AudioContext || window.webkitAudioContext;
+      window.__strictProbe = { contexts: [], blockedResumeCalls: 0, userGestureSeen: false };
+      const markGesture = (event) => {
+        if (event.isTrusted) window.__strictProbe.userGestureSeen = true;
+      };
+      for (const evt of ['pointerdown', 'mousedown', 'touchstart', 'keydown', 'click']) {
+        window.addEventListener(evt, markGesture, { capture: true, passive: true });
+      }
+      if (NativeCtx) {
+        const origResume = NativeCtx.prototype.resume;
+        const stateDesc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(NativeCtx.prototype), 'state')
+          || Object.getOwnPropertyDescriptor(NativeCtx.prototype, 'state');
+        NativeCtx.prototype.resume = function (...args) {
+          if (!window.__strictProbe.userGestureSeen) {
+            window.__strictProbe.blockedResumeCalls += 1;
+            return Promise.resolve();
+          }
+          this.__fakeSuspended = false;
+          return origResume.apply(this, args).then((result) => {
+            this.dispatchEvent(new Event('statechange'));
+            return result;
+          });
+        };
+        function StrictContext(...args) {
+          const ctx = new NativeCtx(...args);
+          ctx.__fakeSuspended = true;
+          Object.defineProperty(ctx, 'state', {
+            configurable: true,
+            get() {
+              return this.__fakeSuspended ? 'suspended' : (stateDesc?.get ? stateDesc.get.call(this) : 'running');
+            },
+          });
+          window.__strictProbe.contexts.push(ctx);
+          return ctx;
+        }
+        StrictContext.prototype = NativeCtx.prototype;
+        window.AudioContext = StrictContext;
+        if (window.webkitAudioContext) window.webkitAudioContext = StrictContext;
+      }
+      const origPlay = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function (...args) {
+        if (!window.__strictProbe.userGestureSeen) {
+          return Promise.reject(new DOMException('play() failed because the user did not interact with the document first.', 'NotAllowedError'));
+        }
+        return origPlay.apply(this, args);
+      };
+    });
+    await strictPage.goto(base);
+    await expect(strictPage.locator('#connection-status')).toContainText('sẵn sàng');
+    await strictPage.waitForTimeout(500);
+    await expect(strictPage.locator('#enable-audio')).toContainText('Bật âm thanh');
+    const beforeClick = await strictPage.evaluate(() => ({
+      state: window.__strictProbe.contexts[0]?.state ?? 'none',
+      blockedResumeCalls: window.__strictProbe.blockedResumeCalls,
+      audioPanelHidden: document.querySelector('#panel-audio')?.hidden,
+    }));
+    assert.equal(beforeClick.state, 'suspended', 'AudioContext must remain suspended before first user interaction');
+    assert(beforeClick.blockedResumeCalls >= 1, 'Startup autoplay must have attempted resume()');
+    assert.equal(beforeClick.audioPanelHidden, true, '#panel-audio must still be closed');
+
+    // Click a regular control (#game-canvas) without opening #tab-audio.
+    await strictPage.locator('#game-canvas').click();
+    await expect(strictPage.locator('#enable-audio')).toContainText('Tắt âm thanh', { timeout: 15000 });
+    await expect(strictPage.locator('#audio-status')).toContainText('Âm thanh sẵn sàng');
+    const afterClickState = await strictPage.evaluate(() => window.__strictProbe.contexts[0]?.state ?? 'none');
+    assert.equal(afterClickState, 'running', 'First click anywhere must unlock AudioContext to running');
+    await strictPage.close();
+  } finally {
+    await strictContext.close();
+  }
+
   assert.deepEqual(failures, [], 'Browser errors or failed requests');
-  console.log('PASS: join, comment "2", KPI/cooldown, coffee, hearts/energy, follow once, gift alert, pause/resume, boss, connector validation, help, audio, saved volume/profile, TikTok frame, 50-person demo, simulation, three months/bonus, rehearsal LIVE room, WebSocket overlay, 1080x1920 buffer, non-overlapping station HUD, "1"/"ra xe"/"lên ghế ngồi"/provinces boarding, clear_demo, CHỜ LIVE -> LIVE -> NỐI LẠI LIVE transitions, desktop/mobile, and zero browser errors.');
+  console.log('PASS: join, comment "2", KPI/cooldown, coffee, hearts/energy, follow once, gift alert, pause/resume, boss, connector validation, help, audio (first-click unlock, overlay autoplay signal, watchdog fallback handover), saved volume/profile, TikTok frame, 50-person demo, simulation, three months/bonus, rehearsal LIVE room, WebSocket overlay, 1080x1920 buffer, non-overlapping station HUD, "1"/"ra xe"/"lên ghế ngồi"/provinces boarding, clear_demo, CHỜ LIVE -> LIVE -> NỐI LẠI LIVE transitions, desktop/mobile, and zero browser errors.');
   console.log(`Screenshots: ${artifacts}`);
 } finally {
+  await autoplayBrowser?.close();
   await browser?.close();
   server2?.kill();
   server.kill();
