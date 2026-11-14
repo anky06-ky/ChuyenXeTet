@@ -60,7 +60,7 @@ export class Effects {
   }
 
   floatText(x: number, y: number, text: string, color = '#3f7d4f', size = 30) {
-    const label = this.scene.add.text(x, y, text, { fontFamily: FONT, fontSize: `${size}px`, fontStyle: '700', color, stroke: '#fff8ea', strokeThickness: 7 }).setOrigin(0.5).setDepth(7000);
+    const label = this.scene.add.text(x, y, text, { fontFamily: FONT, fontSize: `${size}px`, fontStyle: '700', color, stroke: '#fff8ea', strokeThickness: 7, resolution: 2 }).setOrigin(0.5).setDepth(7000);
     this.scene.tweens.add({ targets: label, y: y - 90, alpha: 0, delay: 900, duration: 900, onComplete: () => label.destroy() });
   }
 

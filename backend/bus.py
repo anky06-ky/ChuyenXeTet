@@ -152,6 +152,7 @@ PLACE_PREFIXES = (
 )
 STATION_WORDS = {
     "len xe": "board", "lenxe": "board", "ve que": "board", "veque": "board", "di xe": "board", "dixe": "board", "len": "board",
+    "ra xe": "board", "raxe": "board", "vao xe": "board", "vaoxe": "board", "cho len": "board",
     "len ghe ngoi": "board", "len ghe": "board", "len xe ngoi": "board", "len ngoi": "board",
     "ngoi": "board", "ngoi xe": "board", "ngoi ghe": "board",
     "cho len xe": "board", "cho minh len xe": "board", "cho em len xe": "board", "muon len xe": "board",

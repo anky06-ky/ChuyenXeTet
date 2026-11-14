@@ -10,6 +10,7 @@ the same events so a stream can be rehearsed without going live.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import random
 import re
@@ -30,6 +31,7 @@ SEEN_LIMIT = 5000            # bounded LRU of source message ids
 LIKE_WINDOW = 1.0            # seconds of likes merged into one engine event per viewer
 ENTER_INTERVAL = 2.5         # at most one "just arrived" notice per interval
 BATCH = 24                   # engine results merged into one state broadcast
+NOT_LIVE_RETRY_DELAY = 3     # seconds between checks while waiting for streamer to Go LIVE
 RETRY_DELAYS = (5, 10, 20, 40, 60)
 MOCK_LINES = ("Chúc mừng năm mới cả nhà!", "Công ty vui quá", "Sắp được về quê rồi", "Cố lên mọi người ơi", "Tết này về nhà nha", "Nay chạy KPI căng ghê")
 MOCK_STATION_CHATS = (
@@ -57,11 +59,17 @@ def _safe_int(value, default: int = 0) -> int:
 
 def player_key(user: dict) -> str | None:
     """Stable in-game identity for a platform account: the numeric id, never the nickname."""
-    raw = str(user.get("id") or "").strip()
-    if raw.isdigit() and raw != "0":
-        return f"tt_{raw}"[:80]
-    unique = re.sub(r"[^A-Za-z0-9_-]", "-", str(user.get("uniqueId") or ""))[:60]
-    return f"ttu_{unique}" if unique else None
+    for field in ("id", "idStr"):
+        raw = str(user.get(field) or "").strip()
+        if raw.isdigit() and raw != "0":
+            return f"tt_{raw}"[:80]
+    unique = re.sub(r"[^A-Za-z0-9_-]", "-", str(user.get("uniqueId") or "")).strip("-")[:60]
+    if unique:
+        return f"ttu_{unique}"
+    sec_uid = str(user.get("secUid") or "").strip()
+    if sec_uid:
+        return f"tts_{hashlib.sha256(sec_uid.encode()).hexdigest()[:20]}"
+    return None
 
 
 class LiveBridge:
@@ -89,7 +97,18 @@ class LiveBridge:
                 "counters": {"chat": 0, "like": 0, "gift": 0, "follow": 0, "share": 0, "enter": 0, "duplicate": 0, "dropped": 0}}
 
     def public(self) -> dict:
-        return {**self.state, "counters": dict(self.state["counters"]), "queue": self.queue.qsize() if self.queue else 0}
+        return {
+            **self.state,
+            "counters": dict(self.state["counters"]),
+            "queue": self.queue.qsize() if self.queue else 0,
+            "waiting_live": self.waiting_live,
+        }
+
+    @property
+    def waiting_live(self) -> bool:
+        return self.state["status"] == "connecting" or (
+            self.state["status"] == "error" and self.state.get("code") == "NOT_LIVE"
+        )
 
     @property
     def connected(self) -> bool:
@@ -187,6 +206,12 @@ class LiveBridge:
         self._kill(self.process)
         self.process = None
         self.likes.clear()
+        if self.queue is not None:
+            while not self.queue.empty():
+                try:
+                    self.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
     async def disconnect(self) -> dict:
         await self._stop_source()
@@ -212,8 +237,8 @@ class LiveBridge:
             return
         if status == "error":
             if self.state.get("code") == "NOT_LIVE" and self.state.get("unique_id"):
-                self.state["error"] = f"Kênh @{self.state['unique_id']} chưa bật LIVE. Đang chờ bạn bấm Go LIVE (tự thử lại mỗi 6 giây)…"
-                self.retry_task = asyncio.create_task(self._retry(generation, self.state["unique_id"], 6))
+                self.state["error"] = f"Kênh @{self.state['unique_id']} chưa bật LIVE. Đang chờ bạn bấm Go LIVE (tự thử lại mỗi {NOT_LIVE_RETRY_DELAY} giây)…"
+                self.retry_task = asyncio.create_task(self._retry(generation, self.state["unique_id"], NOT_LIVE_RETRY_DELAY))
                 asyncio.create_task(self.publish([]))
             return
         was_live = status in ("connected", "reconnecting")
@@ -243,6 +268,7 @@ class LiveBridge:
             if status == "connected":
                 self.retries = 0
                 self.state.update(status="connected", error="", code="", room_id=str(message.get("roomId") or "")[:40], since=self.state["since"] or time.time())
+                self.engine.clear_rehearsal(only_if_present=True)
             elif status in ("connecting", "reconnecting"):
                 self.state.update(status=status)
             elif status in ("error", "ended"):
@@ -250,7 +276,7 @@ class LiveBridge:
                 default_err = "Phiên LIVE đã kết thúc." if status == "ended" else "Mất kết nối TikTok LIVE."
                 error = str(message.get("error") or default_err)[:240]
                 if status == "error" and code == "NOT_LIVE" and self.state.get("unique_id"):
-                    error = f"Kênh @{self.state['unique_id']} chưa bật LIVE. Đang chờ bạn bấm Go LIVE (tự thử lại mỗi 6 giây)…"
+                    error = f"Kênh @{self.state['unique_id']} chưa bật LIVE. Đang chờ bạn bấm Go LIVE (tự thử lại mỗi {NOT_LIVE_RETRY_DELAY} giây)…"
                 self.state.update(status=status, code=code, error=error, viewer_count=None)
             else:
                 return  # "disconnected" is followed by the process exit, which decides whether to retry.
@@ -272,8 +298,9 @@ class LiveBridge:
         if not player_id or self.queue is None:
             return
         counters = self.state["counters"]
-        source_id = str(message.get("id") or "")
-        if source_id and source_id != "0":
+        raw_id = str(message.get("id") or "").strip()
+        source_id = "" if raw_id in ("", "0", "-1") else raw_id
+        if source_id:
             key = f"{kind}:{source_id}"
             if key in self.seen:
                 counters["duplicate"] += 1
@@ -281,7 +308,7 @@ class LiveBridge:
             self.seen[key] = None
             if len(self.seen) > SEEN_LIMIT:
                 self.seen.popitem(last=False)
-        nickname = str(user.get("nickname") or user.get("uniqueId") or "Đồng nghiệp")
+        nickname = str(user.get("nickname") or "").strip() or str(user.get("uniqueId") or "").strip() or "Đồng nghiệp"
         avatar = str(user.get("avatar") or "")
         if kind == "like":
             like_count = max(1, _safe_int(message.get("count"), 1))
@@ -297,7 +324,7 @@ class LiveBridge:
         self.queue.put_nowait({
             "kind": kind, "player_id": player_id, "nickname": nickname, "avatar": avatar,
             "event_id": f"live:{source}:{kind}:{source_id}"[:100] if source_id else f"live:{uuid.uuid4()}",
-            "text": str(message.get("text") or ""), "count": max(1, _safe_int(gift.get("count"), 1)),
+            "text": str(message.get("text") or "").strip(), "count": max(1, _safe_int(gift.get("count"), 1)),
             "diamonds": max(0, _safe_int(gift.get("diamonds"), 0)), "gift": str(gift.get("name") or ""),
         })
 

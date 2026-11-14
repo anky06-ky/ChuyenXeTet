@@ -1,17 +1,99 @@
 import Phaser from 'phaser';
 
 export const FONT = '"Be Vietnam Pro", sans-serif';
+export const FACE_CANVAS_SIZE = 180;
 const FACE_COLORS = ['#8f7aa6', '#6f8a66', '#b07f56', '#b07884'];
 const MAX_FACES = 260;
 
 export type FaceOwner = { nickname: string; skin: number; avatar: string };
 
-const canvas = (width: number, height: number) => Object.assign(document.createElement('canvas'), { width, height });
+export const makeCanvas = (width: number, height: number) => {
+  const element = Object.assign(document.createElement('canvas'), { width, height });
+  const ctx = element.getContext('2d');
+  if (ctx) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+  }
+  return element;
+};
+
+/** Wait for embedded Vietnamese fonts before drawing Canvas2D or Phaser Text objects. */
+export function waitForFonts(): Promise<void> {
+  if (typeof document === 'undefined' || !document.fonts) return Promise.resolve();
+  return Promise.all([
+    document.fonts.load(`700 20px ${FONT}`, 'Đồng nghiệp ạếộữ'),
+    document.fonts.load(`600 20px ${FONT}`, 'Đồng nghiệp ạếộữ'),
+    document.fonts.load('700 24px "Baloo 2", sans-serif', 'BẾN XE VỀ QUÊ'),
+  ]).then(() => undefined).catch(() => undefined);
+}
+
+/** Progressive 0.5x step-down so large artwork (1254px) scales cleanly without aliasing. */
+export function ensureScaledTexture(
+  textures: Phaser.Textures.TextureManager,
+  sourceKey: string,
+  targetKey: string,
+  targetSize: number,
+): string {
+  if (textures.exists(targetKey)) return targetKey;
+  if (!textures.exists(sourceKey)) return sourceKey;
+  const source = textures.get(sourceKey).getSourceImage() as HTMLImageElement | HTMLCanvasElement;
+  const sw = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
+  const sh = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
+  if (!sw || !sh) return sourceKey;
+  let current: HTMLImageElement | HTMLCanvasElement = source;
+  let cw = sw;
+  let ch = sh;
+  while (cw > targetSize * 2 || ch > targetSize * 2) {
+    const nw = Math.max(targetSize, Math.round(cw * 0.5));
+    const nh = Math.max(targetSize, Math.round(ch * 0.5));
+    const step = makeCanvas(nw, nh);
+    step.getContext('2d')!.drawImage(current, 0, 0, nw, nh);
+    current = step;
+    cw = nw;
+    ch = nh;
+  }
+  const out = makeCanvas(targetSize, targetSize);
+  out.getContext('2d')!.drawImage(current, 0, 0, targetSize, targetSize);
+  textures.addCanvas(targetKey, out);
+  return targetKey;
+}
+
+function paintAvatarBorder(g: CanvasRenderingContext2D, center: number, radius: number) {
+  g.save();
+  g.beginPath();
+  g.arc(center, center, radius - 2.5, 0, Math.PI * 2);
+  g.lineWidth = 5;
+  g.strokeStyle = 'rgba(255, 245, 227, 0.96)';
+  g.stroke();
+  g.beginPath();
+  g.arc(center, center, radius + 0.5, 0, Math.PI * 2);
+  g.lineWidth = 1.5;
+  g.strokeStyle = 'rgba(56, 18, 8, 0.28)';
+  g.stroke();
+  g.restore();
+}
+
+function drawCrispCover(g: CanvasRenderingContext2D, image: HTMLImageElement, size: number) {
+  let source: HTMLImageElement | HTMLCanvasElement = image;
+  let sw = image.naturalWidth;
+  let sh = image.naturalHeight;
+  while (sw > size * 2 && sh > size * 2) {
+    const nw = Math.max(size, Math.round(sw * 0.5));
+    const nh = Math.max(size, Math.round(sh * 0.5));
+    const step = makeCanvas(nw, nh);
+    step.getContext('2d')!.drawImage(source, 0, 0, nw, nh);
+    source = step;
+    sw = nw;
+    sh = nh;
+  }
+  const fit = Math.max(size / sw, size / sh);
+  g.drawImage(source, (size - sw * fit) / 2, (size - sh * fit) / 2, sw * fit, sh * fit);
+}
 
 /**
  * Circular profile pictures shared by every scene of one game.
  * TikTok images come through the local /api/avatar cache and are clipped once
- * into a canvas texture; until then (or when they fail) an initial is shown.
+ * into a 180×180 canvas texture; until then (or when they fail) an initial is shown.
  */
 export class Faces {
   private keys = new Map<string, string | null>();
@@ -30,12 +112,16 @@ export class Faces {
     const letter = ([...owner.nickname.trim()][0] || 'T').toUpperCase();
     const key = `ini_${owner.skin % 4}_${letter}`;
     if (!this.textures.exists(key)) {
-      const face = canvas(96, 96);
+      const size = FACE_CANVAS_SIZE;
+      const center = size / 2;
+      const radius = center - 6;
+      const face = makeCanvas(size, size);
       const g = face.getContext('2d')!;
       g.fillStyle = FACE_COLORS[owner.skin % 4];
-      g.beginPath(); g.arc(48, 48, 46, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#fff8ec'; g.font = `700 46px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText(letter, 48, 52);
+      g.beginPath(); g.arc(center, center, radius, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#fff8ec'; g.font = `700 84px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(letter, center, center + 5);
+      paintAvatarBorder(g, center, radius);
       this.textures.addCanvas(key, face);
     }
     return key;
@@ -57,11 +143,16 @@ export class Faces {
     image.decoding = 'async';
     image.onload = () => {
       if (!this.keys.has(url) || !image.naturalWidth) return;
-      const face = canvas(96, 96);
+      const size = FACE_CANVAS_SIZE;
+      const center = size / 2;
+      const radius = center - 6;
+      const face = makeCanvas(size, size);
       const g = face.getContext('2d')!;
-      g.beginPath(); g.arc(48, 48, 46, 0, Math.PI * 2); g.clip();
-      const fit = Math.max(96 / image.naturalWidth, 96 / image.naturalHeight);
-      g.drawImage(image, (96 - image.naturalWidth * fit) / 2, (96 - image.naturalHeight * fit) / 2, image.naturalWidth * fit, image.naturalHeight * fit);
+      g.save();
+      g.beginPath(); g.arc(center, center, radius, 0, Math.PI * 2); g.clip();
+      drawCrispCover(g, image, size);
+      g.restore();
+      paintAvatarBorder(g, center, radius);
       const key = `face_${++this.seq}`;
       this.textures.addCanvas(key, face);
       this.keys.set(url, key);
@@ -91,4 +182,3 @@ export function facesFor(game: Phaser.Game) {
 }
 
 export const shortName = (name: string, limit = 9) => { const chars = [...name.trim()]; return chars.length > limit ? chars.slice(0, limit - 1).join('').trimEnd() + '…' : chars.join(''); };
-export const makeCanvas = canvas;

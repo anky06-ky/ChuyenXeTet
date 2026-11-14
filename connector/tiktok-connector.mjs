@@ -30,28 +30,32 @@ if (major < 22 || (major === 22 && minor < 19)) {
   process.exit(3);
 }
 
-const text = (value, limit) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, limit);
+const text = (value, limit) => String(value ?? '').replace(/[\u0000-\u001f\u007f\u200b\u200e\u200f\u2060\ufeff]/g, ' ').trim().slice(0, limit);
+const nonZero = (value, limit = 40) => {
+  const s = text(value, limit);
+  return s && s !== '0' && s !== '-1' ? s : '';
+};
+const userId = (user, fallbackId = '') => nonZero(user?.id, 32) || nonZero(user?.idStr, 32) || nonZero(fallbackId, 32);
 const avatarOf = (user) => user?.avatarThumb?.urlList?.[0] || user?.avatarMedium?.urlList?.[0] || user?.avatarLarge?.urlList?.[0] || '';
-const person = (user) => ({
-  id: text(user?.id, 32),
+const person = (user, fallbackId = '') => ({
+  id: userId(user, fallbackId),
   uniqueId: text(user?.uniqueId, 40),
-  nickname: text(user?.nickname || user?.uniqueId || 'Đồng nghiệp', 40),
+  secUid: text(user?.secUid, 96),
+  nickname: text(user?.nickname, 40) || text(user?.uniqueId, 40) || 'Đồng nghiệp',
   avatar: text(avatarOf(user), 2048),
   follower: Number(user?.followInfo?.followStatus ?? 0) >= 1,
 });
-const messageId = (data) => {
-  const id = text(data?.common?.msgId ?? data?.msgId ?? '', 40);
-  return id === '0' ? '' : id;
-};
-const known = (user) => Boolean(user?.id || user?.uniqueId);
+const messageId = (data) => nonZero(data?.common?.msgId ?? data?.msgId ?? '', 40);
+const known = (user, fallbackId = '') => Boolean(userId(user, fallbackId) || text(user?.uniqueId, 40) || text(user?.secUid, 96));
 const memberUser = (data) => {
   const user = data?.user && typeof data.user === 'object' ? data.user : null;
-  if (!user && !data?.userId) return null;
-  return { ...(user || {}), id: text(user?.id || data?.userId || '', 32) };
+  const id = userId(user, data?.userId);
+  if (!user && !id) return null;
+  return { ...(user || {}), id };
 };
 
 const ERRORS = {
-  HostNotOnlineError: ['NOT_LIVE', 'Kênh này chưa bật LIVE. Đang chờ bạn bấm Go LIVE (tự thử lại mỗi 6 giây)…'],
+  HostNotOnlineError: ['NOT_LIVE', 'Kênh này chưa bật LIVE. Đang chờ bạn bấm Go LIVE (tự thử lại mỗi 3 giây)…'],
   UserNotFoundError: ['NOT_FOUND', 'Không tìm thấy tài khoản TikTok này. Kiểm tra lại @tên kênh.'],
   AgeRestrictedError: ['AGE_RESTRICTED', 'Phòng LIVE giới hạn độ tuổi nên không đọc được sự kiện công khai.'],
   DeviceBlockedError: ['BLOCKED', 'TikTok tạm chặn kết nối từ máy này. Đợi vài phút rồi thử lại.'],
@@ -94,9 +98,10 @@ try {
 
   client.on(EventType.chat, (data) => {
     flowing();
-    if (!known(data?.user)) return;
-    const content = text(data.content, 160);
-    if (content) emit({ t: 'chat', id: messageId(data), user: person(data.user), text: content });
+    const user = data?.user && typeof data.user === 'object' ? data.user : null;
+    if (!known(user, data?.userId)) return;
+    const content = text(data?.content ?? data?.comment ?? '', 160);
+    if (content) emit({ t: 'chat', id: messageId(data), user: person(user, data?.userId), text: content });
   });
   client.on(EventType.gift, (data) => {
     flowing();

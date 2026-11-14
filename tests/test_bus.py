@@ -25,6 +25,12 @@ def test_station_comments_parse_like_tiktok_chat():
     assert parse_station(normalize("lên ghế ngồi")) == ("board", None)
     assert parse_station(normalize("lên ghế")) == ("board", None)
     assert parse_station(normalize("ngồi")) == ("board", None)
+    assert parse_station(normalize("ra xe")) == ("board", None)
+    assert parse_station(normalize("ra xe nha"), relaxed=True) == ("board", None)
+    assert parse_station(normalize("vào xe")) == ("board", None)
+    assert parse_station(normalize("lên")) == ("board", None)
+    assert parse_station(normalize("cho lên")) == ("board", None)
+    assert parse_station(normalize("cho lên nha"), relaxed=True) == ("board", None)
     assert parse_station(normalize("lên ghế 5")) == ("seat", 5)
     assert parse_station(normalize("về quê")) == ("board", None)
     assert parse_station(normalize("đi xe")) == ("board", None)
@@ -362,3 +368,31 @@ def test_viewer_enter_waiting_queue_board_phrases_and_number_seating(tmp_path):
 
     engine.control("depart", "depart_mt")
     assert [w["id"] for w in engine.snapshot()["station"]["waiting"]] == ["tt_q2"]
+
+
+def test_ra_xe_boards_and_clear_demo_resets_rehearsal_clutter_cleanly(tmp_path):
+    with TestClient(create_app(tmp_path / "game.sqlite")) as client:
+        assert client.post("/api/control", json={"action": "scene_station"}).json()["ok"]
+        assert client.post("/api/demo/seed", json={"count": 5}).json()["added"] == 5
+        assert client.post("/api/live/simulate", json={"kind": "chat", "player_id": "demo_001", "nickname": "Minh Anh", "text": "1"}).json()["ok"]
+        assert client.post("/api/live/simulate", json={"kind": "chat", "player_id": "manual_giahuy", "nickname": "Gia Huy", "text": "2"}).json()["ok"]
+        assert client.post("/api/live/simulate", json={"kind": "like", "player_id": "manual_giahuy", "nickname": "Gia Huy", "count": 220}).json()["ok"]
+        assert client.post("/api/live/simulate", json={"kind": "enter", "player_id": "tt_real", "nickname": "♐"}).json()["ok"]
+
+        with client.websocket_connect("/ws") as ws:
+            snap = ws.receive_json()["state"]
+            assert snap["stats"]["demo_players"] == 5
+            assert snap["energy"]["boosts"] == 1
+            cleared = client.post("/api/control", json={"action": "clear_demo"}).json()
+            assert cleared["ok"] and cleared["action"] == "clear_demo"
+            delta = ws.receive_json()["state"]
+            assert delta["stats"]["demo_players"] == 0
+            assert delta["stats"]["total_players"] == 1
+            assert delta["energy"] == {"hearts": 0, "target": 200, "boosts": 0}
+            seats = next(r for r in delta["station"]["routes"] if r["code"] == "mien_tay")["bus"]["seats"]
+            assert all(s is None for s in seats)
+
+        # Now real viewer boards cleanly with "ra xe" onto seat 1.
+        board = client.post("/api/live/simulate", json={"kind": "chat", "player_id": "tt_real", "nickname": "♐", "text": "ra xe"}).json()
+        assert board["results"][0]["code"] == "SEATED" and board["results"][0]["ticket"]["seat"] == 1
+        assert board["state"]["station"]["waiting"] == []

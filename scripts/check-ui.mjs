@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,18 +12,23 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = await mkdtemp(path.join(tmpdir(), 'tetlive-qa-'));
 const artifacts = path.join(root, 'artifacts');
 await mkdir(artifacts, { recursive: true });
-const probe = createServer();
-await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
-const port = probe.address().port;
-await new Promise(resolve => probe.close(resolve));
+const freePort = async () => {
+  const probe = createServer();
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+  const value = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  return value;
+};
+const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
 const python = path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 const server = spawn(python, ['-m', 'uvicorn', 'backend.app:app', '--host', '127.0.0.1', '--port', String(port)], {
   cwd: root,
-  env: { ...process.env, TETLIVE_DB: path.join(scratch, 'qa.sqlite') },
+  env: { ...process.env, TETLIVE_DB: path.join(scratch, 'qa.sqlite'), TETLIVE_NO_AUTOCONNECT: '1' },
   windowsHide: true,
   stdio: ['ignore', 'ignore', 'pipe'],
 });
+let server2;
 let serverLog = '';
 server.stderr.on('data', chunk => { serverLog = (serverLog + chunk.toString()).slice(-4000); });
 let browser;
@@ -34,6 +39,46 @@ const inspect = async (page, name) => {
   page.on('response', response => { if (response.status() >= 400) failures.push(`${name}: ${response.status()} ${response.url()}`); });
 };
 const readState = () => fetch(`${base}/api/state`).then(response => response.json());
+
+const checkHudLayout = async (targetPage, selectors, label) => {
+  const result = await targetPage.evaluate((sels) => {
+    const hud = document.querySelector('#hud');
+    const hudRect = hud.getBoundingClientRect();
+    const items = [];
+    const clipped = [];
+    for (const sel of sels) {
+      const el = hud.querySelector(sel);
+      if (!el) continue;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      const r = el.getBoundingClientRect();
+      items.push({ sel, left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+      if (r.left < hudRect.left - 1 || r.top < hudRect.top - 1 || r.right > hudRect.right + 1 || r.bottom > hudRect.bottom + 1) {
+        clipped.push(`${sel} outside hud`);
+      }
+      if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
+        clipped.push(`${sel} overflow ${el.scrollWidth}x${el.scrollHeight} > ${el.clientWidth}x${el.clientHeight}`);
+      }
+    }
+    const overlaps = [];
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const a = items[i];
+        const b = items[j];
+        if (a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5) {
+          overlaps.push(`${a.sel} overlaps ${b.sel}`);
+        }
+      }
+    }
+    const canvas = document.querySelector('#game-canvas canvas');
+    return { clipped, overlaps, canvasW: canvas?.width ?? 0, canvasH: canvas?.height ?? 0 };
+  }, selectors);
+  assert.equal(result.canvasW, 1080, `${label} canvas width must be 1080`);
+  assert.equal(result.canvasH, 1920, `${label} canvas height must be 1920`);
+  assert.deepEqual(result.overlaps, [], `${label} HUD cards must not overlap`);
+  assert.deepEqual(result.clipped, [], `${label} HUD cards must not clip or overflow`);
+  return result;
+};
 
 try {
   let ready = false;
@@ -54,7 +99,8 @@ try {
   await expect(page.locator('#month-chip')).toHaveText('Mở cửa tự do');
   await expect(page.locator('#stage-month')).toHaveText('MỞ CỬA TỰ DO');
   await expect(page.locator('#live-state')).toHaveText('CHƯA KẾT NỐI');
-  await expect(page.locator('#hud-badge')).toHaveText('DEMO');
+  await expect(page.locator('#hud-badge')).toHaveText('CHƯA LIVE');
+  await expect(page.locator('#hud-badge')).toHaveAttribute('data-mode', 'idle');
   await expect(page.locator('#month-button')).toBeHidden();
   assert.equal(await page.locator('.journey-item').count(), 2);
   await expect(page.locator('#game-canvas canvas')).toBeVisible();
@@ -145,10 +191,12 @@ try {
     const fit = await overlay.evaluate(() => {
       const stage = document.querySelector('#stage').getBoundingClientRect();
       const hud = document.querySelector('#hud').getBoundingClientRect();
+      const canvas = document.querySelector('#game-canvas canvas');
       const doc = document.documentElement;
       return {
         stage: { x: stage.x, y: stage.y, width: stage.width, height: stage.height },
         hud: { width: hud.width, height: hud.height },
+        canvas: { width: canvas?.width ?? 0, height: canvas?.height ?? 0 },
         scrollW: doc.scrollWidth,
         clientW: doc.clientWidth,
         scrollH: doc.scrollHeight,
@@ -157,6 +205,8 @@ try {
         innerH: window.innerHeight,
       };
     });
+    assert.equal(fit.canvas.width, 1080, `Overlay ${vp.width}x${vp.height} canvas backing width must stay 1080`);
+    assert.equal(fit.canvas.height, 1920, `Overlay ${vp.width}x${vp.height} canvas backing height must stay 1920`);
     assert(Math.abs(fit.stage.width / fit.stage.height - 9 / 16) < 0.01, `Overlay ${vp.width}x${vp.height} must keep 9:16 ratio`);
     assert(Math.abs(fit.hud.width - fit.stage.width) < 1.5 && Math.abs(fit.hud.height - fit.stage.height) < 1.5, 'HUD must scale with the stage');
     assert(fit.stage.x >= -0.5 && fit.stage.y >= -0.5 && fit.stage.width <= fit.innerW + 0.5 && fit.stage.height <= fit.innerH + 0.5, `Overlay ${vp.width}x${vp.height} stage clipped`);
@@ -194,14 +244,17 @@ try {
   // Rehearsal room: sample viewers drive the overlay through the real LIVE pipeline.
   await page.locator('#live-mock').click();
   await expect(page.locator('#live-state')).toHaveText('PHÒNG GIẢ LẬP');
-  await expect(overlay.locator('#hud-badge')).toHaveText('GIẢ LẬP');
+  await expect(overlay.locator('#hud-badge')).toHaveText('MÔ PHỎNG');
+  await expect(overlay.locator('#hud-badge')).toHaveAttribute('data-mode', 'mock');
   await expect.poll(async () => (await (await fetch(`${base}/api/live/status`)).json()).counters.chat, { timeout: 10000 }).toBeGreaterThan(2);
   await expect.poll(async () => (await readState()).stats.demo_players, { timeout: 10000 }).toBeGreaterThan(50);
   await overlay.waitForTimeout(3000);
+  await checkHudLayout(overlay, ['.hud-board', '.hud-leaders', '.hud-howto', '.hud-gifts', '.hud-energy'], 'Office overlay');
   await overlay.screenshot({ path: path.join(artifacts, 'overlay.png') });
   await page.locator('#live-connect').click();
   await expect(page.locator('#live-state')).toHaveText('CHƯA KẾT NỐI');
-  await expect(overlay.locator('#hud-badge')).toHaveText('DEMO');
+  await expect(overlay.locator('#hud-badge')).toHaveText('CHƯA LIVE');
+  await expect(overlay.locator('#hud-badge')).toHaveAttribute('data-mode', 'idle');
 
   // Stage 2: Bus station 24 seats, waiting queue join -> "lên ghế ngồi" / "1" / province -> departure.
   await page.locator('#scene-station').click();
@@ -263,10 +316,26 @@ try {
   assert.equal(boardProv.results[0].ticket.hometown, 'Cần Thơ');
   await expect.poll(async () => (await readState()).station.waiting.map(w => w.id)).not.toContain('tt_wait_4');
 
-  // Capture Miền Tây with seated passengers, hometown pills, and waiting chibi in the queue.
+  // "ra xe" moves a waiting viewer onto the next open seat and clears them from the waiting queue.
+  const enterFive = await simPost({ kind: 'enter', player_id: 'tt_wait_5', nickname: 'Khách Ra Xe', event_id: 'ui-enter-5' });
+  assert.equal(enterFive.results[0].code, 'ENTERED');
+  const boardRaXe = await simPost({ kind: 'chat', player_id: 'tt_wait_5', nickname: 'Khách Ra Xe', text: 'ra xe', event_id: 'ui-board-raxe' });
+  assert.equal(boardRaXe.results[0].code, 'SEATED');
+  assert.equal(boardRaXe.results[0].cue, 'horn');
+  assert.equal(boardRaXe.results[0].ticket.seat, 4);
+  await expect.poll(async () => (await readState()).station.waiting.map(w => w.id)).not.toContain('tt_wait_5');
+
+  // Ensure 3 rows render inside #hud-hearts so .hud-energy 3-row fit is verified without overflow.
+  await simPost({ kind: 'like', player_id: 'tt_wait_2', nickname: 'Nick Phụ 2', count: 15, event_id: 'ui-like-wait-2' });
+  await simPost({ kind: 'like', player_id: 'tt_wait_1', nickname: 'Nick Phụ 1', count: 10, event_id: 'ui-like-wait-1' });
+  await expect(overlay.locator('#hud-hearts li:not(.empty)')).toHaveCount(3);
+
+  // Check native 1080×1920 overlay HUD layout and capture screenshots before asserting geometry.
+  await overlay.setViewportSize({ width: 1080, height: 1920 });
   await page.waitForTimeout(1600);
   await page.screenshot({ path: path.join(artifacts, 'station.png'), fullPage: true });
   await overlay.screenshot({ path: path.join(artifacts, 'station-overlay.png') });
+  await checkHudLayout(overlay, ['.hud-board', '.hud-routes', '.hud-howto', '.hud-gifts', '.hud-energy'], 'Station overlay');
 
   await page.locator('#nickname').fill('Khách Nghệ An');
   await page.locator('[data-province="Nghệ An"]').click();
@@ -285,9 +354,107 @@ try {
   await expect(overlay.locator('#hud-routes')).toContainText('1/24');
   await page.locator('#depart-button').click();
   await expect(page.locator('#command-feedback')).toContainText('xuất bến');
+
+  // clear_demo button wipes demo_* and manual_* players, seats, and rehearsal energy cleanly while preserving real tt_* viewers.
+  await page.locator('#clear-demo-button').click();
+  await expect(page.locator('#command-feedback')).toContainText('Đã làm sạch');
+  await expect.poll(async () => {
+    const st = await readState();
+    const isTestId = (id) => id.startsWith('demo_') || id.startsWith('manual_') || id.startsWith('rehearsal_');
+    const badPlayers = st.players.filter(p => isTestId(p.id)).length;
+    const badSeats = (st.station?.routes ?? []).flatMap(r => r.bus.seats).filter(s => s && isTestId(s.id)).length;
+    const badWait = (st.station?.waiting ?? []).filter(w => isTestId(w.id)).length;
+    return { demo: st.stats.demo_players, badPlayers, badSeats, badWait, hearts: st.energy.hearts, boosts: st.energy.boosts };
+  }).toEqual({ demo: 0, badPlayers: 0, badSeats: 0, badWait: 0, hearts: 0, boosts: 0 });
+  assert((await readState()).players.some(p => p.id === 'tt_wait_2'), 'Real tt_* viewers must survive clear_demo');
+  await expect(overlay.locator('#energy-text')).toHaveText('0 / 200 tim');
+  const clearedHudText = await overlay.locator('#hud').innerText();
+  for (const fakeName of ['Bé Na', 'Kiểm thử Tết', 'Người đến muộn', 'Khách Nghệ An']) {
+    assert(!clearedHudText.includes(fakeName), `Fake/manual name "${fakeName}" remained in HUD after clear_demo`);
+  }
+  await expect(overlay.locator('#hud-alert')).toBeHidden({ timeout: 8000 });
+  await overlay.screenshot({ path: path.join(artifacts, 'station-cleared.png') });
+
   await page.locator('#scene-office').click();
   await expect(page.locator('#board-title')).toHaveText('CÔNG TY CUỐI NĂM');
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'Desktop layout overflows horizontally');
+
+  // Verify CHỜ LIVE -> LIVE -> NỐI LẠI LIVE -> LIVE badge transitions + auto-clean + real "ra xe" via an ephemeral server with a mock connector.
+  const port2 = await freePort();
+  const base2 = `http://127.0.0.1:${port2}`;
+  const markerFile = path.join(scratch, 'live-attempt.txt');
+  const fakeConnector = path.join(scratch, 'fake-connector.mjs');
+  await writeFile(fakeConnector, `
+    import fs from 'node:fs';
+    import readline from 'node:readline';
+    const marker = ${JSON.stringify(markerFile)};
+    const attempt = (fs.existsSync(marker) ? Number(fs.readFileSync(marker, 'utf8')) : 0) + 1;
+    fs.writeFileSync(marker, String(attempt));
+    const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
+    send({ t: 'status', status: 'connecting', uniqueId: process.argv[2] });
+    if (attempt === 1) {
+      setTimeout(() => {
+        send({ t: 'status', status: 'error', code: 'NOT_LIVE', error: 'offline' });
+        process.exit(1);
+      }, 250);
+    } else {
+      setTimeout(() => {
+        send({ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId: 'qa_live_room' });
+        send({ t: 'viewers', count: 12 });
+      }, 250);
+      setTimeout(() => {
+        send({ t: 'status', status: 'reconnecting', uniqueId: process.argv[2] });
+      }, 1500);
+      setTimeout(() => {
+        send({ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId: 'qa_live_room' });
+        send({ t: 'chat', id: 'qa_real_raxe', user: { id: '888123', uniqueId: 'real.tester', nickname: 'Khách LIVE Thật' }, text: 'ra xe' });
+      }, 2600);
+      readline.createInterface({ input: process.stdin }).on('line', (line) => { if (line.trim() === 'quit') process.exit(0); });
+    }
+  `, 'utf8');
+  const liveRunner = `import uvicorn; from pathlib import Path; from backend.app import create_app; uvicorn.run(create_app(Path(${JSON.stringify(path.join(scratch, 'qa-live.sqlite'))}), connector=Path(${JSON.stringify(fakeConnector)})), host='127.0.0.1', port=${port2}, log_level='warning')`;
+  server2 = spawn(python, ['-c', liveRunner], {
+    cwd: root,
+    env: { ...process.env, TETLIVE_NO_AUTOCONNECT: '1' },
+    windowsHide: true,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let server2Ready = false;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try { server2Ready = (await fetch(`${base2}/api/health`)).ok; } catch { /* Wait for ephemeral live QA server. */ }
+    if (server2Ready) break;
+    await new Promise(resolve => setTimeout(resolve, 150));
+  }
+  assert(server2Ready, 'Ephemeral live QA server failed to start');
+  const livePage = await context.newPage();
+  await inspect(livePage, 'live-transitions');
+  await livePage.goto(base2);
+  await expect(livePage.locator('#hud-badge')).toHaveText('CHƯA LIVE');
+  await livePage.locator('#scene-station').click();
+  await expect(livePage.locator('#board-title')).toHaveText('BẾN XE VỀ QUÊ');
+  await fetch(`${base2}/api/demo/seed`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ count: 3 }) });
+  await livePage.locator('#live-user').fill('@akkkkk_224');
+  await livePage.locator('#live-connect').click();
+  await expect(livePage.locator('#hud-badge')).toHaveText('CHỜ LIVE');
+  await expect(livePage.locator('#hud-badge')).toHaveAttribute('data-mode', 'waiting');
+  await expect(livePage.locator('#live-state')).toHaveText('ĐANG CHỜ LIVE…', { timeout: 6000 });
+  await expect(livePage.locator('#hud-badge')).toHaveText('LIVE', { timeout: 10000 });
+  await expect(livePage.locator('#hud-badge')).toHaveAttribute('data-mode', 'live');
+  await expect(livePage.locator('#live-state')).toHaveText('ĐANG LIVE');
+  const postConnectState = await fetch(`${base2}/api/state`).then(r => r.json());
+  assert.equal(postConnectState.stats.demo_players, 0, 'Connected live session must auto-clear demo_* clutter');
+  await expect(livePage.locator('#stage-headcount')).toHaveText('0 trên xe · 0 chờ');
+  await expect(livePage.locator('#hud-badge')).toHaveText('NỐI LẠI LIVE', { timeout: 6000 });
+  await expect(livePage.locator('#hud-badge')).toHaveAttribute('data-mode', 'reconnecting');
+  await expect(livePage.locator('#hud-badge')).toHaveText('LIVE', { timeout: 6000 });
+  await expect.poll(async () => {
+    const st = await fetch(`${base2}/api/state`).then(r => r.json());
+    const mienTay = st.station?.routes?.find(r => r.code === 'mien_tay');
+    return mienTay?.bus?.seats?.[0]?.nickname ?? null;
+  }, { timeout: 6000 }).toBe('Khách LIVE Thật');
+  await livePage.close();
+  server2.kill();
+  server2 = undefined;
 
   const mobile = await context.newPage();
   await inspect(mobile, 'mobile');
@@ -298,9 +465,10 @@ try {
   await mobile.waitForTimeout(2500);
   await mobile.screenshot({ path: path.join(artifacts, 'mobile.png'), fullPage: true });
   assert.deepEqual(failures, [], 'Browser errors or failed requests');
-  console.log('PASS: join, comment "2", KPI/cooldown, coffee, hearts/energy, follow once, gift alert, pause/resume, boss, connector validation, help, audio, saved volume/profile, TikTok frame, 50-person demo, simulation, three months/bonus, rehearsal LIVE room, WebSocket overlay, desktop/mobile, and zero browser errors.');
+  console.log('PASS: join, comment "2", KPI/cooldown, coffee, hearts/energy, follow once, gift alert, pause/resume, boss, connector validation, help, audio, saved volume/profile, TikTok frame, 50-person demo, simulation, three months/bonus, rehearsal LIVE room, WebSocket overlay, 1080x1920 buffer, non-overlapping station HUD, "1"/"ra xe"/"lên ghế ngồi"/provinces boarding, clear_demo, CHỜ LIVE -> LIVE -> NỐI LẠI LIVE transitions, desktop/mobile, and zero browser errors.');
   console.log(`Screenshots: ${artifacts}`);
 } finally {
   await browser?.close();
+  server2?.kill();
   server.kill();
 }

@@ -1,11 +1,11 @@
 import Phaser from 'phaser';
+import { FONT, ensureScaledTexture, facesFor, makeCanvas, shortName, waitForFonts, type Faces } from './faces';
 import { ensureFxTextures } from './fx';
 import { StationScene } from './station';
 import type { GameResult, GameState, Player } from './types';
 
 export const STAGE_W = 1080;
 export const STAGE_H = 1920;
-const FONT = '"Be Vietnam Pro", sans-serif';
 const DOOR = { x: 540, y: 2020 };
 const COFFEE = { x: 540, y: 800 };
 const HEARTS_SPOT = { x: 930, y: 1330 };
@@ -14,7 +14,6 @@ const FACE = 52;
 const FACE_Y = 202;       // face centre above the feet
 const NAME_Y = 160;       // name pill centre above the feet
 const SKIN_TINT = [0xffffff, 0xffffff, 0xffe9d3, 0xe7e6ff];
-const FACE_COLORS = ['#8f7aa6', '#6f8a66', '#b07f56', '#b07884'];
 const RECEPTION: Player = { id: '__reception__', nickname: 'Nhân sự · NPC', skin: 1, kpi: 0, coins: 0, xp: 0, last_work: 0, last_seen: 0, mission_works: 0, missions_completed: 0, avatar: '', hearts: 0, gifts: 0, followed: 0 };
 const MAX_FX = 180;
 
@@ -35,9 +34,6 @@ type Avatar = {
   away: boolean;
 };
 
-const shortName = (name: string, limit = 9) => { const chars = [...name.trim()]; return chars.length > limit ? chars.slice(0, limit - 1).join('').trimEnd() + '…' : chars.join(''); };
-const canvas = (width: number, height: number) => Object.assign(document.createElement('canvas'), { width, height });
-
 export class OfficeScene extends Phaser.Scene {
   private avatars = new Map<string, Avatar>();
   private leaving = new Set<Avatar>();
@@ -46,8 +42,9 @@ export class OfficeScene extends Phaser.Scene {
   private ready = false;
   private desks?: Phaser.GameObjects.Container;
   private lastLayout = '';
-  private faces = new Map<string, string | null>();
-  private faceSeq = 0;
+  private faces!: Faces;
+  private releaseFaces?: () => void;
+  private releaseReady?: () => void;
   private fx = 0;
   onSelect?: (player: Player) => void;
   onCreated?: () => void;
@@ -61,9 +58,19 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   create() {
+    this.faces = facesFor(this.game);
+    ensureScaledTexture(this.textures, 'boy', 'boy_office', FIGURE * 2);
+    ensureScaledTexture(this.textures, 'girl', 'girl_office', FIGURE * 2);
     this.buildRoom();
     this.add.image(0, 0, 'room').setOrigin(0, 0).setDepth(0);
     ensureFxTextures(this.textures);
+    this.releaseFaces = this.faces.use(() => Array.from(this.avatars.values(), avatar => avatar.player.avatar).filter(Boolean));
+    this.releaseReady = this.faces.onReady((url, key) => {
+      for (const avatar of this.avatars.values()) {
+        if (avatar.player.avatar === url) avatar.face.setTexture(key).setDisplaySize(FACE, FACE);
+      }
+    });
+    this.events.once('shutdown', () => { this.releaseFaces?.(); this.releaseReady?.(); });
     this.drawCoffeeCorner();
     this.desks = this.add.container(0, 0);
     for (let index = 0; index < 9; index++) {
@@ -76,8 +83,7 @@ export class OfficeScene extends Phaser.Scene {
     }
     this.onCreated?.();
     // Names are drawn on canvas: wait for the Vietnamese subset so diacritics never fall back.
-    const fonts = typeof document !== 'undefined' && document.fonts ? Promise.all([document.fonts.load(`700 20px ${FONT}`, 'Đồng nghiệp ạếộữ'), document.fonts.load(`600 20px ${FONT}`, 'Đồng nghiệp ạếộữ')]) : Promise.resolve();
-    void fonts.catch(() => undefined).finally(() => {
+    void waitForFonts().finally(() => {
       this.ready = true;
       if (this.pendingState) this.applyState(this.pendingState);
     });
@@ -85,8 +91,9 @@ export class OfficeScene extends Phaser.Scene {
 
   /** One static texture: the painted office, a mirrored floor extension and gradients for TikTok's own UI. */
   private buildRoom() {
+    if (this.textures.exists('room')) return;
     const source = this.textures.get('office').getSourceImage() as HTMLImageElement;
-    const room = canvas(STAGE_W, STAGE_H);
+    const room = makeCanvas(STAGE_W, STAGE_H);
     const g = room.getContext('2d')!;
     const scale = 1.06;
     const width = source.width * scale;
@@ -121,33 +128,6 @@ export class OfficeScene extends Phaser.Scene {
     this.textures.addCanvas('room', room);
   }
 
-  private buildTextures() {
-    const heart = canvas(44, 40);
-    const h = heart.getContext('2d')!;
-    h.fillStyle = '#ff4d6d';
-    h.beginPath(); h.moveTo(22, 38); h.bezierCurveTo(-6, 20, 4, -4, 22, 10); h.bezierCurveTo(40, -4, 50, 20, 22, 38); h.fill();
-    h.fillStyle = 'rgba(255,255,255,.55)'; h.beginPath(); h.ellipse(13, 12, 5, 3.5, -0.6, 0, Math.PI * 2); h.fill();
-    this.textures.addCanvas('heart', heart);
-    const coin = canvas(40, 40);
-    const c = coin.getContext('2d')!;
-    const shine = c.createRadialGradient(15, 13, 2, 20, 20, 20);
-    shine.addColorStop(0, '#fff3b8'); shine.addColorStop(0.6, '#f2b632'); shine.addColorStop(1, '#a8670d');
-    c.fillStyle = shine; c.beginPath(); c.arc(20, 20, 18, 0, Math.PI * 2); c.fill();
-    c.strokeStyle = '#7a4806'; c.lineWidth = 2; c.stroke();
-    c.fillStyle = '#7a4806'; c.fillRect(15, 15, 10, 10);
-    this.textures.addCanvas('coin', coin);
-    const spark = canvas(32, 32);
-    const s = spark.getContext('2d')!;
-    const glow = s.createRadialGradient(16, 16, 0, 16, 16, 16);
-    glow.addColorStop(0, 'rgba(255,255,235,1)'); glow.addColorStop(0.35, 'rgba(255,214,110,.9)'); glow.addColorStop(1, 'rgba(255,170,60,0)');
-    s.fillStyle = glow; s.fillRect(0, 0, 32, 32);
-    this.textures.addCanvas('spark', spark);
-    const petal = canvas(16, 22);
-    const p = petal.getContext('2d')!;
-    p.fillStyle = '#f4a6b4'; p.beginPath(); p.ellipse(8, 11, 6, 10, 0.3, 0, Math.PI * 2); p.fill();
-    this.textures.addCanvas('petal', petal);
-  }
-
   private drawCoffeeCorner() {
     const g = this.add.graphics({ x: COFFEE.x, y: COFFEE.y }).setDepth(10 + COFFEE.y);
     g.fillStyle(0x4a2a17, 0.22).fillEllipse(0, 34, 150, 26);
@@ -158,7 +138,7 @@ export class OfficeScene extends Phaser.Scene {
     g.fillStyle(0x7b4a2c).fillRect(-49, -27, 14, 4).fillRect(31, -27, 14, 4);
     g.fillStyle(0xb64a36).fillRoundedRect(-14, -46, 28, 36, 8);
     g.fillStyle(0x3d2a20).fillRect(-6, -52, 12, 7);
-    this.add.text(COFFEE.x, COFFEE.y - 78, 'GÓC CÀ PHÊ', { fontFamily: FONT, fontSize: '17px', fontStyle: '700', color: '#fff3dc', backgroundColor: '#6b2a1bcc', padding: { x: 10, y: 4 } }).setOrigin(0.5).setDepth(10 + COFFEE.y);
+    this.add.text(COFFEE.x, COFFEE.y - 78, 'GÓC CÀ PHÊ', { fontFamily: FONT, fontSize: '17px', fontStyle: '700', color: '#fff3dc', backgroundColor: '#6b2a1bcc', padding: { x: 10, y: 4 }, resolution: 2 }).setOrigin(0.5).setDepth(10 + COFFEE.y);
   }
 
   private slot(index: number, count: number) {
@@ -172,7 +152,7 @@ export class OfficeScene extends Phaser.Scene {
     const gap = rows >= 4 ? 114 : 132;
     const top = 1292 - (rows - 1) * gap / 2;
     const stagger = rows > 1 ? (row % 2 ? 0.25 : -0.25) * spacing : 0;
-    return { x: 540 + (index % columns - (inRow - 1) / 2) * spacing + stagger, y: top + row * gap };
+    return { x: Math.round(540 + (index % columns - (inRow - 1) / 2) * spacing + stagger), y: Math.round(top + row * gap) };
   }
 
   private drawDesks(slots: { x: number; y: number }[]) {
@@ -193,79 +173,27 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  private initialsFace(player: Player) {
-    const letter = ([...player.nickname.trim()][0] || 'T').toUpperCase();
-    const key = `ini_${player.skin % 4}_${letter}`;
-    if (!this.textures.exists(key)) {
-      const face = canvas(96, 96);
-      const g = face.getContext('2d')!;
-      g.fillStyle = FACE_COLORS[player.skin % 4];
-      g.beginPath(); g.arc(48, 48, 46, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#fff8ec'; g.font = `700 46px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText(letter, 48, 52);
-      this.textures.addCanvas(key, face);
-    }
-    return key;
-  }
-
-  /** TikTok profile pictures come through the local avatar cache and are clipped to a circle once. */
-  private faceKey(player: Player) {
-    const url = player.avatar;
-    if (!url) return this.initialsFace(player);
-    const ready = this.faces.get(url);
-    if (ready && this.textures.exists(ready)) return ready;
-    if (!this.faces.has(url)) {
-      this.faces.set(url, null);
-      if (this.faces.size > 260) this.pruneFaces();
-      const image = new Image();
-      image.decoding = 'async';
-      image.onload = () => {
-        const face = canvas(96, 96);
-        const g = face.getContext('2d')!;
-        g.beginPath(); g.arc(48, 48, 46, 0, Math.PI * 2); g.clip();
-        const fit = Math.max(96 / image.naturalWidth, 96 / image.naturalHeight);
-        g.drawImage(image, (96 - image.naturalWidth * fit) / 2, (96 - image.naturalHeight * fit) / 2, image.naturalWidth * fit, image.naturalHeight * fit);
-        const key = `face_${++this.faceSeq}`;
-        this.textures.addCanvas(key, face);
-        this.faces.set(url, key);
-        for (const avatar of this.avatars.values()) if (avatar.player.avatar === url) avatar.face.setTexture(key).setDisplaySize(FACE, FACE);
-      };
-      image.onerror = () => this.faces.delete(url);
-      image.src = `/api/avatar?u=${encodeURIComponent(url)}`;
-    }
-    return this.initialsFace(player);
-  }
-
-  private pruneFaces() {
-    const used = new Set([...this.avatars.values()].map(avatar => avatar.player.avatar));
-    for (const [url, key] of this.faces) {
-      if (used.has(url)) continue;
-      if (key && this.textures.exists(key)) this.textures.remove(key);
-      this.faces.delete(url);
-    }
-  }
-
   private paintTag(avatar: Avatar, leader: boolean) {
     const { player, label, pill, ring, crown } = avatar;
     label.setText(shortName(player.nickname, player.id === RECEPTION.id ? 14 : 9));
-    const width = Math.max(58, label.width + 22);
+    const width = Math.max(58, Math.ceil(label.width + 22));
     const demo = player.id.startsWith('demo_');
     pill.clear();
-    pill.fillStyle(demo ? 0x4a3a32 : 0x5c1b10, 0.9).fillRoundedRect(-width / 2, -NAME_Y - 16, width, 32, 16);
-    pill.lineStyle(2, player.followed ? 0xf6cf6b : 0xf3dfc0, player.followed ? 1 : 0.65).strokeRoundedRect(-width / 2, -NAME_Y - 16, width, 32, 16);
+    pill.fillStyle(demo ? 0x4a3a32 : 0x5c1b10, 0.92).fillRoundedRect(-width / 2, -NAME_Y - 16, width, 32, 16);
+    pill.lineStyle(2, player.followed ? 0xf6cf6b : 0xf3dfc0, player.followed ? 1 : 0.75).strokeRoundedRect(-width / 2, -NAME_Y - 16, width, 32, 16);
     label.setPosition(0, -NAME_Y);
     ring.clear();
-    ring.lineStyle(player.followed ? 5 : 3, player.followed ? 0xf6cf6b : 0xfff3dc, 1).strokeCircle(0, -FACE_Y, FACE / 2 + 1);
+    ring.lineStyle(player.followed ? 4.5 : 3, player.followed ? 0xf6cf6b : 0xfff3dc, 1).strokeCircle(0, -FACE_Y, FACE / 2 + 1);
     crown.setVisible(leader && player.kpi > 0);
   }
 
   private createAvatar(player: Player, x: number, y: number, delay: number): Avatar {
     const shadow = this.add.ellipse(0, 2, 70, 16, 0x3b2418, 0.25);
-    const sprite = this.add.image(0, 0, player.skin % 2 ? 'girl' : 'boy').setOrigin(0.5, 1).setDisplaySize(FIGURE, FIGURE).setTint(SKIN_TINT[player.skin % 4]);
+    const sprite = this.add.image(0, 0, player.skin % 2 ? 'girl_office' : 'boy_office').setOrigin(0.5, 1).setDisplaySize(FIGURE, FIGURE).setTint(SKIN_TINT[player.skin % 4]);
     const root = this.add.container(DOOR.x, DOOR.y, [shadow, sprite]).setDepth(10 + DOOR.y);
     const pill = this.add.graphics();
-    const label = this.add.text(0, -NAME_Y, '', { fontFamily: FONT, fontSize: '18px', fontStyle: '700', color: '#fff6e3' }).setOrigin(0.5, 0.5);
-    const face = this.add.image(0, -FACE_Y, this.faceKey(player)).setDisplaySize(FACE, FACE);
+    const label = this.add.text(0, -NAME_Y, '', { fontFamily: FONT, fontSize: '18px', fontStyle: '700', color: '#fff6e3', stroke: '#3a1008', strokeThickness: 2, resolution: 2 }).setOrigin(0.5, 0.5);
+    const face = this.add.image(0, -FACE_Y, this.faces.key(player)).setDisplaySize(FACE, FACE);
     const ring = this.add.graphics();
     // Drawn, not an emoji: OBS machines do not always ship a colour emoji font.
     const crown = this.add.graphics({ x: 0, y: -FACE_Y - FACE / 2 - 2 }).setVisible(false);
@@ -309,10 +237,10 @@ export class OfficeScene extends Phaser.Scene {
         const previous = avatar.player;
         avatar.player = player;
         if (previous.skin !== player.skin) {
-          avatar.sprite.setTexture(player.skin % 2 ? 'girl' : 'boy').setDisplaySize(FIGURE, FIGURE).setTint(SKIN_TINT[player.skin % 4]);
+          avatar.sprite.setTexture(player.skin % 2 ? 'girl_office' : 'boy_office').setDisplaySize(FIGURE, FIGURE).setTint(SKIN_TINT[player.skin % 4]);
           this.burst(avatar.root.x, avatar.root.y - 80, 'spark', 10, 90);
         }
-        if (previous.avatar !== player.avatar || previous.skin !== player.skin || previous.nickname !== player.nickname) avatar.face.setTexture(this.faceKey(player)).setDisplaySize(FACE, FACE);
+        if (previous.avatar !== player.avatar || previous.skin !== player.skin || previous.nickname !== player.nickname) avatar.face.setTexture(this.faces.key(player)).setDisplaySize(FACE, FACE);
         if ((avatar.x !== target.x || avatar.y !== target.y) && !avatar.away) this.walk(avatar, target.x, target.y);
         avatar.x = target.x;
         avatar.y = target.y;
@@ -357,9 +285,9 @@ export class OfficeScene extends Phaser.Scene {
   private bubble(avatar: Avatar, text: string, tone: 'chat' | 'alert' = 'chat') {
     avatar.bubble?.destroy();
     avatar.bubbleTimer?.remove();
-    const label = this.add.text(0, 0, [...text].slice(0, 40).join(''), { fontFamily: FONT, fontSize: '19px', fontStyle: '600', color: tone === 'alert' ? '#8a2b19' : '#3e2412', align: 'center', wordWrap: { width: 250, useAdvancedWrap: true } }).setOrigin(0.5, 1);
-    const width = label.width + 26;
-    const height = label.height + 16;
+    const label = this.add.text(0, 0, [...text].slice(0, 40).join(''), { fontFamily: FONT, fontSize: '19px', fontStyle: '600', color: tone === 'alert' ? '#8a2b19' : '#3e2412', align: 'center', wordWrap: { width: 250, useAdvancedWrap: true }, resolution: 2 }).setOrigin(0.5, 1);
+    const width = Math.ceil(label.width + 26);
+    const height = Math.ceil(label.height + 16);
     const box = this.add.graphics();
     box.fillStyle(tone === 'alert' ? 0xffe7a6 : 0xfff8ea, 0.97).fillRoundedRect(-width / 2, -height, width, height, 14).fillTriangle(-9, -1, 9, -1, 0, 11);
     box.lineStyle(2, 0xd59a45, 1).strokeRoundedRect(-width / 2, -height, width, height, 14);
@@ -374,7 +302,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private floatText(x: number, y: number, text: string, color = '#3f7d4f', size = 30) {
-    const label = this.add.text(x, y, text, { fontFamily: FONT, fontSize: `${size}px`, fontStyle: '700', color, stroke: '#fff8ea', strokeThickness: 7 }).setOrigin(0.5).setDepth(7000);
+    const label = this.add.text(x, y, text, { fontFamily: FONT, fontSize: `${size}px`, fontStyle: '700', color, stroke: '#fff8ea', strokeThickness: 7, resolution: 2 }).setOrigin(0.5).setDepth(7000);
     this.tweens.add({ targets: label, y: y - 90, alpha: 0, delay: 900, duration: 900, onComplete: () => label.destroy() });
   }
 
@@ -490,7 +418,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 }
 
-export function createOffice(parent: HTMLElement, onSelect: (player: Player) => void) {
+export function createOffice(parent: HTMLElement, onSelect: (player: Player) => void, forceCanvas = false) {
   const office = new OfficeScene();
   const station = new StationScene();
   office.onSelect = onSelect;
@@ -518,16 +446,28 @@ export function createOffice(parent: HTMLElement, onSelect: (player: Player) => 
   };
 
   const game = new Phaser.Game({
-    type: Phaser.AUTO,
+    type: forceCanvas ? Phaser.CANVAS : Phaser.AUTO,
     parent,
     width: STAGE_W,
     height: STAGE_H,
     backgroundColor: '#c98a55',
     scene: [office, station],
     scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-    render: { antialias: true, roundPixels: false },
+    render: { antialias: true, roundPixels: true },
     fps: { target: 30, forceSetTimeOut: true },
     audio: { noAudio: true },
+  });
+
+  const applyCanvasSmoothing = () => {
+    const renderer = game.renderer;
+    if (renderer && 'gameContext' in renderer && renderer.gameContext) {
+      renderer.gameContext.imageSmoothingEnabled = true;
+      renderer.gameContext.imageSmoothingQuality = 'high';
+    }
+  };
+  game.events.once(Phaser.Core.Events.READY, () => {
+    applyCanvasSmoothing();
+    game.renderer?.on?.(Phaser.Renderer.Events.PRE_RENDER, applyCanvasSmoothing);
   });
 
   const scene = {

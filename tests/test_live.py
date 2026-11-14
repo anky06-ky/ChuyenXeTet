@@ -96,7 +96,9 @@ def test_viewer_arrivals_never_enroll_and_known_colleagues_return(tmp_path):
 
 def test_identity_and_addresses_are_normalized():
     assert player_key({"id": "6789", "uniqueId": "an.nguyen"}) == "tt_6789"
+    assert player_key({"id": "0", "idStr": "6926507410044486658", "nickname": "♐"}) == "tt_6926507410044486658"
     assert player_key({"id": "0", "uniqueId": "an.nguyen"}) == "ttu_an-nguyen"
+    assert (player_key({"secUid": "MS4wLjABAAAA123"}) or "").startswith("tts_")
     assert player_key({"nickname": "không có id"}) is None
     assert normalize_username(" https://www.tiktok.com/@tet.live/live?x=1 ") == "tet.live"
     assert normalize_username("@tetlive") == "tetlive"
@@ -280,7 +282,7 @@ def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
             batches.append(results)
 
         bridge = LiveBridge(engine, publish, tmp_path, connector=fake)
-        # Speed up the 6s NOT_LIVE retry check while verifying delay == 6 is requested.
+        # Speed up the 3s NOT_LIVE retry check while verifying delay == 3 is requested.
         orig_retry = bridge._retry
         observed_delays = []
 
@@ -296,7 +298,7 @@ def test_bridge_retries_not_live_for_akkkkk_224_and_survives_spam(tmp_path):
                 break
         status = bridge.public()
         await bridge.close()
-        assert observed_delays == [6]
+        assert observed_delays == [3]
         assert status["unique_id"] == "akkkkk_224"
         assert status["status"] == "connected"
         assert status["counters"]["chat"] == 30
@@ -387,3 +389,62 @@ def test_tunnel_readonly_get_and_ws_allowed_while_post_stays_loopback_only(tmp_p
             assert r_fwd.status_code == 403, (path, r_fwd.status_code)
             r_fwd_host = client.post(path, json=payload, headers={"X-Forwarded-Host": tunnel_host})
             assert r_fwd_host.status_code == 403, (path, r_fwd_host.status_code)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js is required for the connector process")
+def test_app_autoconnects_on_startup_and_clears_rehearsal_on_connected(tmp_path, monkeypatch):
+    import time
+
+    db_path = tmp_path / "game.sqlite"
+    seed_engine = GameEngine(db_path)
+    seed_engine.control("scene_station", "open_station")
+    seed_engine.seed(3)
+    seed_engine.live_event("chat", "demo_001", "Tí Còi", "d1", text="1")
+    seed_engine.live_event("like", "manual_1", "Gia Huy", "d2", count=81)
+
+    fake = tmp_path / "auto-live.mjs"
+    fake.write_text("""
+        import readline from 'node:readline';
+        const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
+        send({ t: 'status', status: 'connecting', uniqueId: process.argv[2] });
+        send({ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId: 'room_live' });
+        const userA = { id: '0', idStr: '6926507410044486658', uniqueId: '', nickname: '♐', avatar: '' };
+        const userTak = { id: '0', uniqueId: 'tak', nickname: 'tak', avatar: '' };
+        setTimeout(() => {
+            send({ t: 'join', id: '0', user: userA, members: 2 });
+            send({ t: 'chat', id: '-1', user: userA, text: '1' });
+            send({ t: 'chat', id: '0', user: userTak, text: ' ra xe ' });
+            send({ t: 'like', id: '0', user: userTak, count: 5 });
+        }, 120);
+        setTimeout(() => {
+            send({ t: 'status', status: 'reconnecting', uniqueId: process.argv[2] });
+            send({ t: 'status', status: 'connected', uniqueId: process.argv[2], roomId: 'room_live' });
+        }, 300);
+        readline.createInterface({ input: process.stdin }).on('line', (line) => { if (line.trim() === 'quit') process.exit(0); });
+    """, encoding="utf-8")
+
+    monkeypatch.setenv("TETLIVE_NO_AUTOCONNECT", "0")
+    monkeypatch.setenv("TETLIVE_CHANNEL", "@akkkkk_224")
+
+    with TestClient(create_app(db_path, connector=fake)) as client:
+        deadline = time.monotonic() + 5.0
+        state = client.get("/api/state").json()
+        while time.monotonic() < deadline:
+            state = client.get("/api/state").json()
+            seats = next(r for r in state["station"]["routes"] if r["code"] == "mien_tay")["bus"]["seats"]
+            if state["live"]["status"] == "connected" and seats[0] and seats[1] and state["energy"]["hearts"] == 5:
+                break
+            time.sleep(0.05)
+        assert state["live"]["status"] == "connected"
+        assert state["live"]["unique_id"] == "akkkkk_224"
+        assert state["stats"]["demo_players"] == 0
+        assert state["stats"]["total_players"] == 2
+        assert state["energy"] == {"hearts": 5, "target": HEART_BOOST, "boosts": 0}
+        seats = next(r for r in state["station"]["routes"] if r["code"] == "mien_tay")["bus"]["seats"]
+        assert seats[0]["id"] == "tt_6926507410044486658" and seats[0]["nickname"] == "♐"
+        assert seats[1]["id"] == "ttu_tak" and seats[1]["nickname"] == "tak"
+        # Wait past reconnect->connected pulse to confirm real players/hearts are preserved.
+        time.sleep(0.35)
+        after = client.get("/api/state").json()
+        assert after["stats"]["total_players"] == 2
+        assert after["energy"]["hearts"] == 5

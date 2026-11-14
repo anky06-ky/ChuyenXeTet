@@ -39,7 +39,7 @@ class CommandInput(BaseModel):
 
 
 class ControlInput(BaseModel):
-    action: str = Field(pattern=r"^(pause|resume|next_month|bonus|boss|mode_open|mode_scheduled|scene_office|scene_station|depart|route_(mien_tay|tay_nguyen|mien_trung|mien_bac))$")
+    action: str = Field(pattern=r"^(pause|resume|next_month|bonus|boss|mode_open|mode_scheduled|scene_office|scene_station|depart|clear_demo|route_(mien_tay|tay_nguyen|mien_trung|mien_bac))$")
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()), max_length=100, min_length=1)
 
 
@@ -106,7 +106,7 @@ def avatar_source(raw: str | None) -> str | None:
     return value
 
 
-def create_app(database_path: str | Path | None = None) -> FastAPI:
+def create_app(database_path: str | Path | None = None, connector: Path | None = None) -> FastAPI:
     clients: set[WebSocket] = set()
     database = Path(database_path or os.getenv("TETLIVE_DB", str(ROOT / "data" / "tetlive.sqlite")))
     avatar_dir = database.parent / "avatar-cache"
@@ -148,8 +148,11 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.engine = GameEngine(database)
-        app.state.live = LiveBridge(app.state.engine, publish_many, ROOT)
+        app.state.live = LiveBridge(app.state.engine, publish_many, ROOT, connector=connector)
         depart_task = asyncio.create_task(depart_watch())
+        auto_channel = os.getenv("TETLIVE_CHANNEL", "akkkkk_224").strip()
+        if os.getenv("TETLIVE_NO_AUTOCONNECT", "").strip() != "1" and auto_channel:
+            await app.state.live.connect(auto_channel)
         try:
             yield
         finally:

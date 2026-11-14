@@ -33,6 +33,7 @@ export interface LiveStatus {
   room_id: string;
   error: string;
   code: string;
+  waiting_live?: boolean;
   viewer_count: number | null;
   since: number | null;
   counters: { chat: number; like: number; gift: number; follow: number; share: number; enter: number; duplicate: number; dropped: number };

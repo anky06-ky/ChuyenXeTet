@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { FONT, facesFor, makeCanvas, shortName, type Faces } from './faces';
+import { FONT, ensureScaledTexture, facesFor, makeCanvas, shortName, waitForFonts, type Faces } from './faces';
 import { Effects, ensureFxTextures } from './fx';
 import type { GameResult, GameState, SeatOccupant, StationRoute, WaitingViewer } from './types';
 
@@ -7,31 +7,31 @@ const W = 1080;
 const H = 1920;
 const BUS_X = 540;
 const BUS_Y = 880;          // top of the bus body
-const BUS_W = 524;
-const BUS_H = 600;
-const SEAT_W = 84;
-const SEAT_H = 72;
-const FACE_SIZE = 38;
-const SEAT_X = [-190, -96, 96, 190];
-const ROW_Y = (row: number) => 98 + row * 80;
+const BUS_W = 536;
+const BUS_H = 594;
+const SEAT_W = 92;
+const SEAT_H = 74;
+const FACE_SIZE = 36;
+const SEAT_X = [-192, -92, 92, 192];
+const ROW_Y = (row: number) => 102 + row * 82;
 const DOOR = { x: BUS_X + BUS_W / 2 + 6, y: BUS_Y + 104 };
 const ARRIVE_FROM = H + 260;
 const SIDE_SPOT = { x: 890, y: 1220 };
-const WAIT_FIGURE = 86;
-const WAIT_FACE = 34;
-const WAIT_NAME_Y = 96;
-const WAIT_FACE_Y = 126;
+const WAIT_FIGURE = 90;
+const WAIT_FACE = 36;
+const WAIT_NAME_Y = 100;
+const WAIT_FACE_Y = 134;
 const WAIT_SKIN_TINT = [0xffffff, 0xffffff, 0xffe9d3, 0xe7e6ff];
 const WAIT_ENTRANCE = { x: 938, y: 1640 };
 const WAIT_SLOTS = [
-  { x: 852, y: 1060 },
-  { x: 916, y: 1138 },
-  { x: 852, y: 1218 },
-  { x: 916, y: 1298 },
-  { x: 852, y: 1378 },
-  { x: 916, y: 1456 },
-  { x: 176, y: 1125 },
-  { x: 212, y: 1265 },
+  { x: 856, y: 1148 },
+  { x: 922, y: 1218 },
+  { x: 856, y: 1288 },
+  { x: 922, y: 1358 },
+  { x: 856, y: 1428 },
+  { x: 922, y: 1498 },
+  { x: 176, y: 1148 },
+  { x: 212, y: 1298 },
 ];
 
 type WaiterView = {
@@ -102,14 +102,10 @@ export class StationScene extends Phaser.Scene {
     this.faces = facesFor(this.game);
     this.fx = new Effects(this);
     ensureFxTextures(this.textures);
-    if (!this.textures.exists('station-bg')) this.buildBackground();
-    this.add.image(0, 0, 'station-bg').setOrigin(0, 0).setDepth(0);
-    for (let index = 0; index < 7; index++) {
-      const glow = this.add.image(80 + index * 153, 100 + (index % 2) * 30, 'spark').setDepth(1).setDisplaySize(90, 90).setAlpha(0.24);
-      this.tweens.add({ targets: glow, alpha: 0.5, scale: glow.scale * 1.15, duration: 1500 + index * 180, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-    }
-    this.buildLed();
-    this.buildQueueSign();
+    ensureScaledTexture(this.textures, 'boy', 'boy_wait', WAIT_FIGURE * 2);
+    ensureScaledTexture(this.textures, 'girl', 'girl_wait', WAIT_FIGURE * 2);
+    ensureScaledTexture(this.textures, 'boy', 'boy_walk', 240);
+    ensureScaledTexture(this.textures, 'girl', 'girl_walk', 240);
     this.releaseFaces = this.faces.use(() => [
       ...this.seats.map(seat => seat.occupant?.avatar ?? ''),
       ...Array.from(this.waiters.values(), waiter => waiter.viewer.avatar ?? ''),
@@ -119,6 +115,10 @@ export class StationScene extends Phaser.Scene {
       for (const waiter of this.waiters.values()) if (waiter.viewer.avatar === url) waiter.face.setTexture(key).setDisplaySize(WAIT_FACE, WAIT_FACE);
     });
     this.events.once('shutdown', () => { this.releaseFaces?.(); this.releaseReady?.(); });
+    for (let index = 0; index < 7; index++) {
+      const glow = this.add.image(80 + index * 153, 100 + (index % 2) * 30, 'spark').setDepth(1).setDisplaySize(90, 90).setAlpha(0.24);
+      this.tweens.add({ targets: glow, alpha: 0.5, scale: glow.scale * 1.15, duration: 1500 + index * 180, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    }
     for (let index = 0; index < 8; index++) {
       const petal = this.add.image(80 + index * 130, 200 + (index % 3) * 50, 'petal').setDepth(4000).setAlpha(0.7);
       this.tweens.add({ targets: petal, y: 1500, x: `+=${60 - index * 15}`, angle: 280, alpha: 0, duration: 12500 + index * 1300, delay: index * 1000, repeat: -1, onRepeat: () => { petal.y = 200; petal.alpha = 0.7; } });
@@ -132,8 +132,15 @@ export class StationScene extends Phaser.Scene {
         }
       },
     });
-    this.ready = true;
-    if (this.pending) this.applyState(this.pending);
+    void waitForFonts().finally(() => {
+      if (!this.sys?.settings) return;
+      if (!this.textures.exists('station-bg')) this.buildBackground();
+      this.add.image(0, 0, 'station-bg').setOrigin(0, 0).setDepth(0);
+      this.buildLed();
+      this.buildQueueSign();
+      this.ready = true;
+      if (this.pending) this.applyState(this.pending);
+    });
   }
 
   /** The station hall, platform and asphalt are painted once into one texture. */
@@ -143,22 +150,28 @@ export class StationScene extends Phaser.Scene {
     const sky = g.createLinearGradient(0, 0, 0, 520);
     sky.addColorStop(0, '#f2a97f'); sky.addColorStop(1, '#fbe3c5');
     g.fillStyle = sky; g.fillRect(0, 0, W, 520);
-    // Hall facade with arches and ticket windows.
+    // Hall facade with clean symmetric arches and a centered boarding gate.
     g.fillStyle = '#f4e4c8'; g.fillRect(0, 150, W, 720);
     g.fillStyle = '#b8352a'; g.fillRect(0, 140, W, 26);
     g.fillStyle = '#e8b55a'; g.fillRect(0, 166, W, 8);
     for (let index = 0; index < 5; index++) {
-      const x = 40 + index * 210;
+      const x = 35 + index * 210;
       g.fillStyle = '#e6d0aa';
       g.beginPath(); g.moveTo(x, 860); g.lineTo(x, 330); g.arc(x + 85, 330, 85, Math.PI, 0); g.lineTo(x + 170, 860); g.closePath(); g.fill();
       g.fillStyle = '#9fc3c9';
       g.beginPath(); g.moveTo(x + 18, 600); g.lineTo(x + 18, 340); g.arc(x + 85, 340, 67, Math.PI, 0); g.lineTo(x + 152, 600); g.closePath(); g.fill();
       g.strokeStyle = '#f7efe0'; g.lineWidth = 6;
       g.beginPath(); g.moveTo(x + 85, 274); g.lineTo(x + 85, 600); g.moveTo(x + 18, 450); g.lineTo(x + 152, 450); g.stroke();
+      // Keep side arches free of text signs so HUD cards never half-occlude "QUẦY VÉ".
       g.fillStyle = '#8a5a3a'; g.fillRect(x + 10, 640, 150, 160);
-      g.fillStyle = '#f2c45f'; g.fillRect(x + 22, 652, 126, 30);
-      g.fillStyle = '#5c1b10'; g.font = `700 20px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText(index === 2 ? 'RA XE' : 'QUẦY VÉ', x + 85, 668);
+      g.strokeStyle = '#c8a87e'; g.lineWidth = 3; g.strokeRect(x + 20, 650, 130, 140);
+      if (index === 2) {
+        g.fillStyle = '#f2c45f';
+        g.beginPath(); g.roundRect(x + 12, 654, 146, 34, 8); g.fill();
+        g.strokeStyle = '#5c1b10'; g.lineWidth = 2; g.stroke();
+        g.fillStyle = '#5c1b10'; g.font = `700 18px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText('CỔNG RA XE', x + 85, 672);
+      }
     }
     // Lanterns and garland across the top.
     for (let index = 0; index < 7; index++) {
@@ -182,7 +195,7 @@ export class StationScene extends Phaser.Scene {
     g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 6; g.setLineDash([36, 26]);
     for (const x of [240, 840]) { g.beginPath(); g.moveTo(x, 960); g.lineTo(x, H); g.stroke(); }
     g.setLineDash([]);
-    g.fillStyle = 'rgba(242,201,76,.85)';
+    g.fillStyle = 'rgba(246,212,98,.9)';
     g.font = `700 44px ${FONT}`; g.textAlign = 'center';
     g.fillText('BẾN 1', BUS_X, 1640);
     // Waiting benches on the left side of the bay.
@@ -193,21 +206,21 @@ export class StationScene extends Phaser.Scene {
       g.fillStyle = ['#d8452f', '#3f7d9e', '#e0a43a'][row]; g.fillRect(x - 18, y - 46, 36, 46);
       g.fillStyle = '#2b2522'; g.fillRect(x - 8, y - 56, 16, 10);
     }
-    // Dedicated Boarding Queue lane right outside the bus door (x = 816..964).
-    g.fillStyle = 'rgba(28, 22, 19, 0.52)';
-    g.beginPath(); g.roundRect(816, 938, 148, 532, 18); g.fill();
-    g.strokeStyle = 'rgba(242, 196, 95, 0.78)'; g.lineWidth = 3; g.setLineDash([10, 8]);
-    g.beginPath(); g.roundRect(816, 938, 148, 532, 18); g.stroke();
+    // Dedicated Boarding Queue lane right outside the bus door (x = 818..968).
+    g.fillStyle = 'rgba(24, 18, 15, 0.58)';
+    g.beginPath(); g.roundRect(818, 946, 150, 588, 18); g.fill();
+    g.strokeStyle = 'rgba(242, 196, 95, 0.85)'; g.lineWidth = 3; g.setLineDash([10, 8]);
+    g.beginPath(); g.roundRect(818, 946, 150, 588, 18); g.stroke();
     g.setLineDash([]);
     // Velvet rope stanchions guiding toward the bus door.
     g.strokeStyle = '#c83a2b'; g.lineWidth = 5;
-    g.beginPath(); g.moveTo(956, 980); g.lineTo(956, 1450); g.stroke();
-    for (const py of [980, 1136, 1292, 1450]) {
-      g.fillStyle = '#f2c45f'; g.beginPath(); g.arc(956, py, 7, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.moveTo(960, 990); g.lineTo(960, 1510); g.stroke();
+    for (const py of [990, 1163, 1336, 1510]) {
+      g.fillStyle = '#f2c45f'; g.beginPath(); g.arc(960, py, 7, 0, Math.PI * 2); g.fill();
     }
-    g.fillStyle = 'rgba(242, 196, 95, 0.9)';
-    g.font = `700 17px ${FONT}`; g.textAlign = 'center';
-    g.fillText('⬅ LÊN XE', 876, 972);
+    g.fillStyle = '#ffd977';
+    g.font = `700 18px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('⬅ LÊN XE', 893, 968);
     const bottom = g.createLinearGradient(0, 1420, 0, H);
     bottom.addColorStop(0, 'rgba(20,10,6,0)'); bottom.addColorStop(1, 'rgba(20,10,6,.6)');
     g.fillStyle = bottom; g.fillRect(0, 1420, W, H - 1420);
@@ -218,28 +231,28 @@ export class StationScene extends Phaser.Scene {
     const g = this.add.graphics().setDepth(5);
     g.fillStyle(0x1e1a1a, 0.96).fillRoundedRect(406, 440, 268, 170, 18);
     g.lineStyle(4, 0xf2c45f).strokeRoundedRect(406, 440, 268, 170, 18);
-    const style = { fontFamily: FONT, fontStyle: '700', color: '#ffc861', align: 'center' } as const;
+    const style = { fontFamily: FONT, fontStyle: '700', color: '#ffc861', align: 'center', resolution: 2 } as const;
     this.led = {
       title: this.add.text(540, 468, 'CỔNG RA XE', { ...style, fontSize: '26px' }).setOrigin(0.5).setDepth(6),
       stops: this.add.text(540, 524, '', { ...style, fontSize: '17px', color: '#ffe6a8', lineSpacing: 4, wordWrap: { width: 244 } }).setOrigin(0.5).setDepth(6),
       info: this.add.text(540, 584, '', { ...style, fontSize: '19px', color: '#8fe3b0' }).setOrigin(0.5).setDepth(6),
     };
-    this.countdown = this.add.text(BUS_X, 852, '', { fontFamily: FONT, fontSize: '21px', fontStyle: '700', color: '#ffffff', backgroundColor: '#c4271bee', padding: { x: 14, y: 6 } }).setOrigin(0.5).setDepth(5200).setVisible(false);
+    this.countdown = this.add.text(BUS_X, 852, '', { fontFamily: FONT, fontSize: '21px', fontStyle: '700', color: '#ffffff', backgroundColor: '#c4271bee', padding: { x: 14, y: 6 }, resolution: 2 }).setOrigin(0.5).setDepth(5200).setVisible(false);
   }
 
   private buildQueueSign() {
     this.queueHeader = {
-      badge: this.add.text(890, 902, 'HÀNG CHỜ LÊN XE', {
-        fontFamily: FONT, fontSize: '15px', fontStyle: '700', color: '#fff3d1',
-        backgroundColor: '#7a2113ee', padding: { x: 10, y: 4 },
+      badge: this.add.text(893, 886, 'HÀNG CHỜ LÊN XE', {
+        fontFamily: FONT, fontSize: '16px', fontStyle: '700', color: '#fff3d1',
+        backgroundColor: '#7a2113f2', padding: { x: 10, y: 4 }, resolution: 2,
       }).setOrigin(0.5).setDepth(8),
-      count: this.add.text(890, 932, 'Chưa có khách chờ', {
-        fontFamily: FONT, fontSize: '13px', fontStyle: '700', color: '#ffe19a',
-        backgroundColor: '#2c1f1ae6', padding: { x: 8, y: 3 },
+      count: this.add.text(893, 916, 'Chưa có khách chờ', {
+        fontFamily: FONT, fontSize: '13.5px', fontStyle: '700', color: '#ffe19a',
+        backgroundColor: '#2c1f1af0', padding: { x: 8, y: 3 }, resolution: 2,
       }).setOrigin(0.5).setDepth(8),
-      more: this.add.text(890, 1488, '', {
+      more: this.add.text(893, 1558, '', {
         fontFamily: FONT, fontSize: '14px', fontStyle: '700', color: '#fff3d1',
-        backgroundColor: '#8a3220ee', padding: { x: 10, y: 4 },
+        backgroundColor: '#8a3220f2', padding: { x: 10, y: 4 }, resolution: 2,
       }).setOrigin(0.5).setDepth(9).setVisible(false),
     };
   }
@@ -248,7 +261,7 @@ export class StationScene extends Phaser.Scene {
     this.idleTween?.stop();
     if (!this.bus || this.departing) return;
     this.bus.y = BUS_Y;
-    this.idleTween = this.tweens.add({ targets: this.bus, y: BUS_Y - 2.5, duration: 520, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    this.idleTween = this.tweens.add({ targets: this.bus, y: BUS_Y - 2, duration: 520, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
   }
 
   private setWheelsSpinning(spinning: boolean) {
@@ -278,15 +291,15 @@ export class StationScene extends Phaser.Scene {
     }
     body.fillStyle(color).fillRoundedRect(-BUS_W / 2, 0, BUS_W, BUS_H, 48);
     body.fillStyle(0xffffff, 0.16).fillRoundedRect(-BUS_W / 2 + 8, 6, BUS_W - 16, 18, 9);
-    body.fillStyle(0xf3ece0).fillRoundedRect(-BUS_W / 2 + 22, 62, BUS_W - 44, BUS_H - 96, 22);
-    body.fillStyle(0x23384f).fillRoundedRect(-BUS_W / 2 + 30, 12, BUS_W - 60, 40, 16);
+    body.fillStyle(0xf3ece0).fillRoundedRect(-BUS_W / 2 + 20, 60, BUS_W - 40, BUS_H - 94, 22);
+    body.fillStyle(0x23384f).fillRoundedRect(-BUS_W / 2 + 28, 12, BUS_W - 56, 40, 16);
     body.fillStyle(0x9fd0e8, 0.55).fillRoundedRect(-BUS_W / 2 + 44, 18, 120, 10, 5);
     body.fillStyle(0x2b2522).fillRect(-BUS_W / 2 - 12, 26, 14, 30).fillRect(BUS_W / 2 - 2, 26, 14, 30);
     body.fillStyle(0xfff4cc, 0.25).fillTriangle(-BUS_W / 2 + 40, 4, -BUS_W / 2 + 16, -44, -BUS_W / 2 + 64, -44).fillTriangle(BUS_W / 2 - 40, 4, BUS_W / 2 - 64, -44, BUS_W / 2 - 16, -44);
     body.fillStyle(0xfff4cc).fillCircle(-BUS_W / 2 + 40, 4, 9).fillCircle(BUS_W / 2 - 40, 4, 9);
     body.fillStyle(0xd9d2c4).fillRect(BUS_W / 2 - 24, 72, 24, 70);
     body.fillStyle(0x2b2522, 0.85).fillRoundedRect(-BUS_W / 2 + 40, BUS_H - 30, BUS_W - 80, 16, 8);
-    body.fillStyle(0xe0d8ca).fillRect(-50, 62, 100, BUS_H - 96);
+    body.fillStyle(0xe0d8ca).fillRect(-38, 60, 76, BUS_H - 94);
     const wheelMarks = this.add.graphics();
     wheelMarks.fillStyle(0x6c6560, 0.9);
     for (const wx of [-BUS_W / 2 - 6, BUS_W / 2 - 4]) {
@@ -296,17 +309,17 @@ export class StationScene extends Phaser.Scene {
     }
     this.body = body;
     this.wheelMarks = wheelMarks;
-    this.banner = this.add.text(0, 32, '', { fontFamily: FONT, fontSize: '22px', fontStyle: '700', color: '#ffffff' }).setOrigin(0.5);
+    this.banner = this.add.text(0, 32, '', { fontFamily: FONT, fontSize: '22px', fontStyle: '700', color: '#ffffff', stroke: '#162636', strokeThickness: 3, resolution: 2 }).setOrigin(0.5);
     const container = this.add.container(BUS_X, BUS_Y, [wheelMarks, body, this.banner]).setDepth(20);
     this.seats = [];
     for (let index = 0; index < 24; index++) {
       const { x, y } = seatPosition(index);
       const box = this.add.graphics();
-      const number = this.add.text(0, 0, String(index + 1), { fontFamily: FONT, fontSize: '28px', fontStyle: '700', color: '#2f6f63' }).setOrigin(0.5);
-      const badge = this.add.text(-SEAT_W / 2 + 5, -SEAT_H / 2 + 3, String(index + 1), { fontFamily: FONT, fontSize: '11px', fontStyle: '700', color: '#7a4a2a' }).setOrigin(0, 0).setVisible(false);
-      const face = this.add.image(0, -11, '__DEFAULT').setDisplaySize(FACE_SIZE, FACE_SIZE).setVisible(false);
-      const name = this.add.text(0, 14, '', { fontFamily: FONT, fontSize: '13px', fontStyle: '700', color: '#5c2a14' }).setOrigin(0.5);
-      const hometown = this.add.text(0, 29, '', { fontFamily: FONT, fontSize: '10.5px', fontStyle: '700', color: '#6b220d' }).setOrigin(0.5).setVisible(false);
+      const number = this.add.text(0, 0, String(index + 1), { fontFamily: FONT, fontSize: '30px', fontStyle: '700', color: '#1d5a4e', resolution: 2 }).setOrigin(0.5);
+      const badge = this.add.text(-SEAT_W / 2 + 6, -SEAT_H / 2 + 4, String(index + 1), { fontFamily: FONT, fontSize: '12px', fontStyle: '700', color: '#6a2d12', stroke: '#fff7ea', strokeThickness: 2, resolution: 2 }).setOrigin(0, 0).setVisible(false);
+      const face = this.add.image(0, -13, '__DEFAULT').setDisplaySize(FACE_SIZE, FACE_SIZE).setVisible(false);
+      const name = this.add.text(0, 14, '', { fontFamily: FONT, fontSize: '13.5px', fontStyle: '700', color: '#3f1607', stroke: '#fff6e8', strokeThickness: 2, resolution: 2 }).setOrigin(0.5);
+      const hometown = this.add.text(0, 29, '', { fontFamily: FONT, fontSize: '11.5px', fontStyle: '700', color: '#521506', resolution: 2 }).setOrigin(0.5).setVisible(false);
       const root = this.add.container(x, y, [box, number, badge, face, name, hometown]);
       container.add(root);
       const seat: SeatView = { seatNumber: index + 1, root, box, number, badge, face, name, hometown, occupant: null, x, y };
@@ -323,16 +336,16 @@ export class StationScene extends Phaser.Scene {
     const hasHome = taken && Boolean(occupant?.hometown);
     seat.box.clear();
     seat.box.fillStyle(taken ? 0xffe0c9 : 0xd9f1ea).fillRoundedRect(-SEAT_W / 2, -SEAT_H / 2, SEAT_W, SEAT_H, 14);
-    seat.box.lineStyle(3, (animate && taken) || incoming ? 0xf2b632 : taken ? 0xe39a6c : 0x8fc9b8).strokeRoundedRect(-SEAT_W / 2, -SEAT_H / 2, SEAT_W, SEAT_H, 14);
+    seat.box.lineStyle(3, (animate && taken) || incoming ? 0xf2b632 : taken ? 0xe39a6c : 0x7dc2af).strokeRoundedRect(-SEAT_W / 2, -SEAT_H / 2, SEAT_W, SEAT_H, 14);
     if (hasHome) {
-      seat.box.fillStyle(0xf5cf72).fillRoundedRect(-SEAT_W / 2 + 6, SEAT_H / 2 - 14, SEAT_W - 12, 12, 5);
+      seat.box.fillStyle(0xf7cf6b).fillRoundedRect(-SEAT_W / 2 + 5, SEAT_H / 2 - 15, SEAT_W - 10, 14, 5);
     } else {
-      seat.box.fillStyle(taken ? 0xe7b493 : 0xb9e0d4).fillRoundedRect(-SEAT_W / 2 + 8, SEAT_H / 2 - 10, SEAT_W - 16, 6, 3);
+      seat.box.fillStyle(taken ? 0xe7b493 : 0xb3ded2).fillRoundedRect(-SEAT_W / 2 + 8, SEAT_H / 2 - 10, SEAT_W - 16, 6, 3);
     }
     seat.number.setVisible(!taken);
     seat.badge.setVisible(taken);
     seat.face.setVisible(taken);
-    seat.name.setY(hasHome ? 14 : 21).setText(taken && occupant ? shortName(occupant.nickname, 8) : '');
+    seat.name.setY(hasHome ? 13 : 20).setText(taken && occupant ? shortName(occupant.nickname, 8) : '');
     seat.hometown.setVisible(hasHome).setText(hasHome ? shortName(occupant!.hometown!, 10) : '');
     if (taken && occupant) seat.face.setTexture(this.faces.key(occupant)).setDisplaySize(FACE_SIZE, FACE_SIZE);
     seat.occupant = occupant;
@@ -420,11 +433,11 @@ export class StationScene extends Phaser.Scene {
   private paintWaiterTag(waiter: WaiterView) {
     const { viewer, label, pill, ring } = waiter;
     label.setText(shortName(viewer.nickname, 8));
-    const width = Math.max(54, label.width + 18);
+    const width = Math.max(58, Math.ceil(label.width + 20));
     const demo = viewer.id.startsWith('demo_');
     pill.clear();
-    pill.fillStyle(demo ? 0x4a3a32 : 0x5c1b10, 0.92).fillRoundedRect(-width / 2, -WAIT_NAME_Y - 13, width, 26, 13);
-    pill.lineStyle(2, 0xf6cf6b, 0.9).strokeRoundedRect(-width / 2, -WAIT_NAME_Y - 13, width, 26, 13);
+    pill.fillStyle(demo ? 0x4a3a32 : 0x5c1b10, 0.94).fillRoundedRect(-width / 2, -WAIT_NAME_Y - 14, width, 28, 14);
+    pill.lineStyle(2, 0xf6cf6b, 0.95).strokeRoundedRect(-width / 2, -WAIT_NAME_Y - 14, width, 28, 14);
     label.setPosition(0, -WAIT_NAME_Y);
     ring.clear();
     ring.lineStyle(3, 0xfff3dc, 1).strokeCircle(0, -WAIT_FACE_Y, WAIT_FACE / 2 + 1);
@@ -432,14 +445,14 @@ export class StationScene extends Phaser.Scene {
 
   private createWaiter(viewer: WaitingViewer, targetX: number, targetY: number, animateEnter: boolean, bubbleText?: string): WaiterView {
     const spawn = animateEnter ? WAIT_ENTRANCE : { x: targetX, y: targetY };
-    const shadow = this.add.ellipse(0, 2, 46, 12, 0x2a1810, 0.3);
-    const sprite = this.add.image(0, 0, viewer.skin % 2 ? 'girl' : 'boy')
+    const shadow = this.add.ellipse(0, 2, 48, 12, 0x2a1810, 0.3);
+    const sprite = this.add.image(0, 0, viewer.skin % 2 ? 'girl_wait' : 'boy_wait')
       .setOrigin(0.5, 1)
       .setDisplaySize(WAIT_FIGURE, WAIT_FIGURE)
       .setTint(WAIT_SKIN_TINT[viewer.skin % 4]);
     const root = this.add.container(spawn.x, spawn.y, [shadow, sprite]).setDepth(30 + spawn.y * 0.01);
     const pill = this.add.graphics();
-    const label = this.add.text(0, -WAIT_NAME_Y, '', { fontFamily: FONT, fontSize: '15px', fontStyle: '700', color: '#fff6e3' }).setOrigin(0.5, 0.5);
+    const label = this.add.text(0, -WAIT_NAME_Y, '', { fontFamily: FONT, fontSize: '16px', fontStyle: '700', color: '#fff6e3', stroke: '#3a1008', strokeThickness: 2, resolution: 2 }).setOrigin(0.5, 0.5);
     const face = this.add.image(0, -WAIT_FACE_Y, this.faces.key(viewer)).setDisplaySize(WAIT_FACE, WAIT_FACE);
     const ring = this.add.graphics();
     const tag = this.add.container(spawn.x, spawn.y, [pill, label, face, ring]).setDepth(5000 + spawn.y * 0.01);
@@ -515,10 +528,10 @@ export class StationScene extends Phaser.Scene {
     const label = this.add.text(0, -8, [...text].slice(0, 32).join(''), {
       fontFamily: FONT, fontSize: '16px', fontStyle: '700',
       color: tone === 'alert' ? '#8a2b19' : '#3e2412',
-      align: 'center', wordWrap: { width: 200, useAdvancedWrap: true },
+      align: 'center', wordWrap: { width: 200, useAdvancedWrap: true }, resolution: 2,
     }).setOrigin(0.5, 1);
-    const width = label.width + 22;
-    const height = label.height + 14;
+    const width = Math.ceil(label.width + 22);
+    const height = Math.ceil(label.height + 14);
     const box = this.add.graphics();
     box.fillStyle(tone === 'alert' ? 0xffe7a6 : 0xfff8ea, 0.97).fillRoundedRect(-width / 2, -height, width, height, 12).fillTriangle(-8, -1, 8, -1, 0, 9);
     box.lineStyle(2, 0xd59a45).strokeRoundedRect(-width / 2, -height, width, height, 12);
@@ -638,7 +651,7 @@ export class StationScene extends Phaser.Scene {
         const previous = existing.viewer;
         existing.viewer = viewer;
         if (previous.skin !== viewer.skin) {
-          existing.sprite.setTexture(viewer.skin % 2 ? 'girl' : 'boy').setDisplaySize(WAIT_FIGURE, WAIT_FIGURE).setTint(WAIT_SKIN_TINT[viewer.skin % 4]);
+          existing.sprite.setTexture(viewer.skin % 2 ? 'girl_wait' : 'boy_wait').setDisplaySize(WAIT_FIGURE, WAIT_FIGURE).setTint(WAIT_SKIN_TINT[viewer.skin % 4]);
         }
         if (previous.avatar !== viewer.avatar || previous.nickname !== viewer.nickname || previous.skin !== viewer.skin) {
           existing.face.setTexture(this.faces.key(viewer)).setDisplaySize(WAIT_FACE, WAIT_FACE);
@@ -730,7 +743,7 @@ export class StationScene extends Phaser.Scene {
   }
 
   private walkIn(seatIndex: number, occupant: SeatOccupant) {
-    const sprite = this.add.image(0, 0, occupant.skin % 2 ? 'girl' : 'boy').setOrigin(0.5, 1).setDisplaySize(120, 120);
+    const sprite = this.add.image(0, 0, occupant.skin % 2 ? 'girl_walk' : 'boy_walk').setOrigin(0.5, 1).setDisplaySize(120, 120);
     const suitcase = this.add.graphics();
     suitcase.fillStyle([0xd8452f, 0x3f7d9e, 0xe0a43a, 0x6f8a66][occupant.skin % 4]).fillRoundedRect(30, -46, 30, 40, 6);
     suitcase.fillStyle(0x2b2522).fillRect(40, -56, 10, 10).fillCircle(36, -4, 4).fillCircle(54, -4, 4);
@@ -757,14 +770,26 @@ export class StationScene extends Phaser.Scene {
   private bubbleAt(seatIndex: number, text: string, tone: 'chat' | 'alert' = 'chat') {
     this.bubbles.get(seatIndex)?.destroy();
     const point = this.seatWorld(seatIndex);
-    const label = this.add.text(0, -10, [...text].slice(0, 40).join(''), { fontFamily: FONT, fontSize: '19px', fontStyle: '600', color: tone === 'alert' ? '#8a2b19' : '#3e2412', align: 'center', wordWrap: { width: 250, useAdvancedWrap: true } }).setOrigin(0.5, 1);
-    const width = label.width + 26;
-    const height = label.height + 16;
+    const belowSeat = seatIndex < 4;
+    const label = this.add.text(0, belowSeat ? 10 : -10, [...text].slice(0, 40).join(''), {
+      fontFamily: FONT, fontSize: '19px', fontStyle: '600',
+      color: tone === 'alert' ? '#8a2b19' : '#3e2412',
+      align: 'center', wordWrap: { width: 250, useAdvancedWrap: true }, resolution: 2,
+    }).setOrigin(0.5, belowSeat ? 0 : 1);
+    const width = Math.ceil(label.width + 26);
+    const height = Math.ceil(label.height + 16);
     const box = this.add.graphics();
-    box.fillStyle(tone === 'alert' ? 0xffe7a6 : 0xfff8ea, 0.97).fillRoundedRect(-width / 2, -height - 2, width, height, 14).fillTriangle(-9, -3, 9, -3, 0, 9);
-    box.lineStyle(2, 0xd59a45).strokeRoundedRect(-width / 2, -height - 2, width, height, 14);
-    const x = Math.max(width / 2 + 116, Math.min(W - width / 2 - 116, point.x));
-    const bubble = this.add.container(x, point.y - SEAT_H / 2, [box, label]).setDepth(6000).setScale(0.6).setAlpha(0);
+    const fill = tone === 'alert' ? 0xffe7a6 : 0xfff8ea;
+    if (belowSeat) {
+      box.fillStyle(fill, 0.97).fillRoundedRect(-width / 2, 2, width, height, 14).fillTriangle(-9, 3, 9, 3, 0, -9);
+      box.lineStyle(2, 0xd59a45).strokeRoundedRect(-width / 2, 2, width, height, 14);
+    } else {
+      box.fillStyle(fill, 0.97).fillRoundedRect(-width / 2, -height - 2, width, height, 14).fillTriangle(-9, -3, 9, -3, 0, 9);
+      box.lineStyle(2, 0xd59a45).strokeRoundedRect(-width / 2, -height - 2, width, height, 14);
+    }
+    const x = Math.round(Math.max(width / 2 + 116, Math.min(W - width / 2 - 116, point.x)));
+    const y = Math.round(belowSeat ? point.y + SEAT_H / 2 + 8 : point.y - SEAT_H / 2);
+    const bubble = this.add.container(x, y, [box, label]).setDepth(6000).setScale(0.6).setAlpha(0);
     this.bubbles.set(seatIndex, bubble);
     this.tweens.add({ targets: bubble, scale: 1, alpha: 1, duration: 220, ease: 'Back.easeOut' });
     this.time.delayedCall(4600, () => this.tweens.add({ targets: bubble, alpha: 0, duration: 300, onComplete: () => { bubble.destroy(); if (this.bubbles.get(seatIndex) === bubble) this.bubbles.delete(seatIndex); } }));

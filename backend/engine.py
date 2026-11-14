@@ -44,7 +44,7 @@ PLAYER_COLUMNS = "id,nickname,skin,kpi,coins,xp,last_work,last_seen,mission_work
 
 def normalize(text: str) -> str:
     value = unicodedata.normalize("NFD", text.lower().replace("đ", "d"))
-    return " ".join("".join(char for char in value if not unicodedata.combining(char)).split())
+    return " ".join("".join(char for char in value if not unicodedata.combining(char) and unicodedata.category(char) != "Cf").split())
 
 
 def parse_command(text: str, relaxed: bool = False) -> str | None:
@@ -155,8 +155,8 @@ class GameEngine(BusStation):
             totals = db.execute("SELECT count(*) total_players,coalesce(sum(kpi),0) total_kpi,coalesce(sum(coins),0) total_coins,coalesce(sum(id GLOB 'demo_*'),0) demo_players FROM players").fetchone()
             players = [dict(row) for row in db.execute(f"SELECT {PLAYER_COLUMNS} FROM players ORDER BY last_seen DESC,id LIMIT ?", (VISIBLE_LIMIT,))]
             leaders = [dict(row) for row in db.execute(f"SELECT {PLAYER_COLUMNS} FROM players ORDER BY (id GLOB 'demo_*'),kpi DESC,xp DESC,id LIMIT 5")]
-            top_hearts = [dict(row) for row in db.execute(f"SELECT {PLAYER_COLUMNS} FROM players WHERE hearts>0 ORDER BY hearts DESC,id LIMIT 5")]
-            top_gifts = [dict(row) for row in db.execute(f"SELECT {PLAYER_COLUMNS} FROM players WHERE gifts>0 ORDER BY gifts DESC,id LIMIT 5")]
+            top_hearts = [dict(row) for row in db.execute(f"SELECT {PLAYER_COLUMNS} FROM players WHERE hearts>0 ORDER BY (id GLOB 'demo_*' OR id GLOB 'manual_*' OR id GLOB 'rehearsal_*'),hearts DESC,id LIMIT 5")]
+            top_gifts = [dict(row) for row in db.execute(f"SELECT {PLAYER_COLUMNS} FROM players WHERE gifts>0 ORDER BY (id GLOB 'demo_*' OR id GLOB 'manual_*' OR id GLOB 'rehearsal_*'),gifts DESC,id LIMIT 5")]
             activities = [dict(row) for row in db.execute("SELECT * FROM activities ORDER BY id DESC LIMIT 12")]
             station = self.station_snapshot(db, session, now)
             return {
@@ -488,6 +488,13 @@ class GameEngine(BusStation):
             message = None
             cue = None
             voice = None
+            if action == "clear_demo":
+                cleared = self._clear_rehearsal_tx(db, reset_energy=True, only_if_present=False)
+                count = cleared["removed_players"]
+                message = f"Đã làm sạch {count} hồ sơ thử · sẵn sàng đón người xem LIVE thật!" if count else "Đã làm sạch dữ liệu thử · sẵn sàng cho phiên LIVE thật!"
+                seq = self._event(db, action, message)
+                result.update(ok=True, changed=True, code="CONTROL", seq=seq, message=message, cue="click", action=action, cleared=cleared)
+                return self._store_event(db, event_id, fingerprint, result)
             if action == "depart":
                 result.update(self._depart_focus(db, session, self.clock()))
                 return self._store_event(db, event_id, fingerprint, result)
@@ -531,6 +538,47 @@ class GameEngine(BusStation):
                 seq = self._event(db, action, message)
                 result.update(ok=True, changed=True, code="CONTROL", seq=seq, message=message, cue=cue, voice=voice, action=action)
             return self._store_event(db, event_id, fingerprint, result)
+
+    def clear_rehearsal(self, *, only_if_present: bool = False) -> dict:
+        """Wipe demo/manual/rehearsal profiles, test seats, stale rehearsal activities and energy."""
+        with self.database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return self._clear_rehearsal_tx(db, reset_energy=True, only_if_present=only_if_present)
+
+    def _clear_rehearsal_tx(self, db, *, reset_energy: bool = True, only_if_present: bool = False) -> dict:
+        rehearsal_where = "(id GLOB 'demo_*' OR id GLOB 'manual_*' OR id GLOB 'rehearsal_*')"
+        stale_types = "('seed', 'boost')" if only_if_present else "('seed', 'boost', 'boss', 'next_month', 'bonus')"
+        activity_where = f"(player_id GLOB 'demo_*' OR player_id GLOB 'manual_*' OR player_id GLOB 'rehearsal_*' OR type IN {stale_types})"
+        removed_players = db.execute(f"SELECT count(*) FROM players WHERE {rehearsal_where}").fetchone()[0]
+        removed_activities = db.execute(f"SELECT count(*) FROM activities WHERE {activity_where}").fetchone()[0]
+        if only_if_present and removed_players == 0 and removed_activities == 0:
+            return {"ok": True, "changed": False, "removed_players": 0, "removed_seats": 0, "removed_activities": 0}
+        removed_seats = db.execute(
+            f"DELETE FROM seat_reservations WHERE player_id IN (SELECT id FROM players WHERE {rehearsal_where})"
+        ).rowcount
+        db.execute(f"DELETE FROM players WHERE {rehearsal_where}")
+        db.execute("""
+            UPDATE buses SET full_at=NULL
+            WHERE status='boarding' AND full_at IS NOT NULL
+              AND (SELECT count(*) FROM seat_reservations r WHERE r.bus_id=buses.id AND r.status='active') < capacity
+        """)
+        db.execute("DELETE FROM buses WHERE NOT EXISTS (SELECT 1 FROM seat_reservations r WHERE r.bus_id=buses.id)")
+        db.execute(f"DELETE FROM activities WHERE {activity_where}")
+        remaining_real = db.execute("SELECT count(*) FROM players").fetchone()[0]
+        if remaining_real == 0:
+            db.execute("DELETE FROM activities WHERE type NOT IN ('scene_station', 'scene_office', 'clear_demo')")
+        if reset_energy:
+            has_real_hearts = only_if_present and db.execute("SELECT 1 FROM players WHERE hearts>0 LIMIT 1").fetchone() is not None
+            if not has_real_hearts:
+                db.execute("UPDATE sessions SET hearts=0, boosts=0")
+        db.execute("UPDATE sessions SET version=version+1")
+        return {
+            "ok": True,
+            "changed": True,
+            "removed_players": removed_players,
+            "removed_seats": removed_seats,
+            "removed_activities": removed_activities,
+        }
 
     def seed(self, target: int) -> dict:
         with self.database() as db:

@@ -19,7 +19,45 @@ const number = (value: number) => value.toLocaleString('vi-VN');
 const escape = (text: string) => text.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const initial = (name: string) => escape(([...name.trim()][0] || 'T').toUpperCase());
-const isDemo = (player: Pick<Player, 'id'>) => player.id.startsWith('demo_');
+const isDemo = (player: Pick<Player, 'id'>) => player.id.startsWith('demo_') || player.id.startsWith('rehearsal_');
+const isRealLive = (live: LiveStatus) => live.status === 'connected' || live.status === 'reconnecting';
+const isWaitingLive = (live: LiveStatus) =>
+  Boolean(live.waiting_live)
+  || live.status === 'connecting'
+  || (live.status === 'disconnected' && live.error.includes('Thử lại'))
+  || (live.status === 'error' && (live.code === 'NOT_LIVE' || live.error.includes('tự thử lại')));
+
+function visibleStateForRender(next: GameState): GameState {
+  if (!isRealLive(next.live)) return next;
+  const players = next.players.filter(player => !isDemo(player));
+  const station = next.station
+    ? {
+        ...next.station,
+        waiting: (next.station.waiting ?? []).filter(viewer => !isDemo(viewer)),
+        routes: next.station.routes.map((route) => {
+          const seats = route.bus.seats.map(seat => (seat && isDemo(seat) ? null : seat));
+          const filled = seats.filter(Boolean).length;
+          return { ...route, seated: filled, bus: { ...route.bus, seats, filled } };
+        }),
+      }
+    : next.station;
+  const originalSamples = next.stats.demo_players ?? 0;
+  return {
+    ...next,
+    players,
+    leaderboard: next.leaderboard.filter(player => !isDemo(player)),
+    top_hearts: next.top_hearts.filter(player => !isDemo(player)),
+    top_gifts: next.top_gifts.filter(player => !isDemo(player)),
+    activities: next.activities.filter(entry => !(entry.player_id && isDemo({ id: entry.player_id }))),
+    station,
+    stats: {
+      ...next.stats,
+      demo_players: 0,
+      visible_players: players.length,
+      total_players: Math.max(players.length, next.stats.total_players - originalSamples),
+    },
+  };
+}
 const GIFT_LOOK: Record<string, { emoji: string; effect: (reward: number) => string }> = {
   lixi: { emoji: '🧧', effect: () => 'Cảm ơn + mưa xu' },
   treat: { emoji: '🧋', effect: (reward) => `+${number(reward)} xu cả công ty` },
@@ -70,7 +108,7 @@ const hud = `
   <div class="hud" id="hud" data-scene="office">
     <header class="hud-board">
       <div class="board-title" id="board-title">CÔNG TY CUỐI NĂM</div>
-      <div class="board-meta"><span class="board-badge" id="hud-badge"><i></i>DEMO</span><span id="stage-month">MỞ CỬA TỰ DO</span><span id="stage-headcount">0 nhân viên</span></div>
+      <div class="board-meta"><span class="board-badge" id="hud-badge" data-mode="idle"><i></i>CHƯA LIVE</span><span id="stage-month">MỞ CỬA TỰ DO</span><span id="stage-headcount">0 nhân viên</span></div>
       <div class="board-caption"><span id="stage-caption">${HINTS[0]}</span></div>
     </header>
     <section class="hud-card hud-leaders office-only"><h3>🏆 Top nhân viên</h3><ol id="hud-leaders"></ol></section>
@@ -124,7 +162,8 @@ app.innerHTML = `
             <div class="live-status" id="live-status" aria-live="polite">Bật LIVE trên TikTok trước, rồi nhập tên kênh và bấm Kết nối.</div>
             <div class="live-counters" id="live-counters"></div>
             <button class="button button-outline live-mock" id="live-mock" type="button">${icon('users')} Chạy thử phòng LIVE giả lập</button>
-            <p class="demo-disclosure">TikTok LIVE Studio: chọn <b>Thêm nguồn → Liên kết (Link)</b> và dán <b>http://127.0.0.1:8000/?overlay=1</b> (1080 × 1920).</p>
+            <button class="button button-outline live-clear" id="clear-demo-button" type="button">${icon('sparkles')} Làm sạch dữ liệu thử (Chuẩn bị LIVE thật)</button>
+            <p class="demo-disclosure">TikTok LIVE Studio: chọn <b>Thêm nguồn → Liên kết (Link)</b>, dán <b>http://127.0.0.1:8000/?overlay=1</b> và bật <b>Custom resolution: 1080 × 1920</b> (Full HD 9:16) để chữ và hình nét 1:1, không bị vỡ khi phóng to.</p>
           </section>
           <section class="panel comment-panel"><div class="panel-title"><span class="panel-icon lavender">${icon('chat')}</span><div><h2>Bình luận thử</h2><p>Một câu bình luận, một hành động.</p></div><span class="demo-label">GIẢ LẬP</span></div>
             <form id="command-form"><label for="nickname">Tên người xem <span id="player-selection">Nhân vật của bạn</span></label><input id="nickname" name="nickname" maxlength="24" value="Bạn của Tết" autocomplete="off" required /><div class="command-chips" id="office-chips"><button type="button" data-command="vào làm">${icon('users')} 1 · vào làm</button><button type="button" data-command="làm việc">${icon('sparkles')} 2 · làm việc</button><button type="button" data-command="cà phê">${icon('coffee')} 3 · cà phê</button><button type="button" data-command="lương">${icon('coin')} 4 · lương</button></div><div class="command-chips" id="station-chips" hidden><button type="button" data-command="lên ghế ngồi">${icon('bus')} lên ghế</button><button type="button" data-command="ghế 12">${icon('sparkles')} ghế 12</button><button type="button" data-command="Nghệ An">${icon('road')} Nghệ An</button><button type="button" data-command="Cà Mau">${icon('road')} Cà Mau</button><button type="button" data-command="Đà Lạt">${icon('road')} Đà Lạt</button><button type="button" data-command="Hà Nội">${icon('road')} Hà Nội</button><button type="button" data-command="Đồng Tháp">${icon('road')} Đồng Tháp</button><button type="button" data-command="vé">${icon('coin')} xem vé</button></div><label class="visually-hidden" for="comment">Nội dung bình luận</label><div class="comment-input"><input id="comment" name="comment" placeholder="Nhập bình luận, ví dụ: Nghệ An, Cà Mau hoặc ghế 12" maxlength="160" required autocomplete="off" /><button class="send-button" id="send-command" aria-label="Gửi bình luận">${icon('send')}</button></div></form>
@@ -165,7 +204,7 @@ app.innerHTML = `
     <footer class="app-footer"><span>${icon('check')} <span id="save-status">Đang mở phiên làm việc…</span></span><span>Hôm nay chạy KPI. Ngày mai xách vali. <span class="footer-flower">✿</span></span></footer>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <dialog id="help-dialog"><button class="dialog-close" id="close-help" aria-label="Đóng hướng dẫn">×</button><span class="eyebrow">CHÀO ĐỒNG NGHIỆP MỚI</span><h2>Vào làm & Về quê ăn Tết! <span>✿</span></h2><ol><li>Bật LIVE trên TikTok, nhập <b>@akkkkk_224</b> (hoặc tên kênh của bạn) rồi bấm <b>Kết nối</b>. Thêm link overlay vào TikTok LIVE Studio hoặc OBS ở 1080 × 1920.</li><li><b>Chặng 1 – Công ty cuối năm</b>: bình luận <b>1</b> (vào làm), <b>2</b> (làm việc: +10 KPI, +500 xu), <b>3</b> (cà phê), <b>4</b> (xem lương).</li><li><b>Chặng 2 – Bến xe 24 ghế</b>: bấm <b>Bến xe 24 ghế</b> để mở bến. Người xem bình luận <b>lên xe</b>, số ghế <b>1–24</b>, tên tuyến (<b>miền tây</b>, <b>tây nguyên</b>, <b>miền trung</b>, <b>miền bắc</b>), <b>vé</b> hoặc <b>xuống xe</b>. Đủ 24 ghế xe tự xuất bến sau 10 giây!</li><li><b>Thả tim</b> nạp thanh tiếp sức chung. <b>Follow</b> là ký hợp đồng (+1.000 xu, một lần). <b>Quà</b> chia thưởng cho cả phòng, không mua lợi thế hay tranh ghế.</li><li>Chưa LIVE vẫn thử được: <b>Chạy thử phòng LIVE giả lập</b> hoặc các nút <b>Tương tác LIVE thử</b>.</li></ol><p>Điểm, KPI, vé xe và xu là vật phẩm trong game, không quy đổi tiền thật. Hồ sơ được lưu trên máy và giữ lại khi khởi động lại.</p><button class="button button-primary" id="understood-help">Mình hiểu rồi ${icon('arrow')}</button></dialog>
+  <dialog id="help-dialog"><button class="dialog-close" id="close-help" aria-label="Đóng hướng dẫn">×</button><span class="eyebrow">CHÀO ĐỒNG NGHIỆP MỚI</span><h2>Vào làm & Về quê ăn Tết! <span>✿</span></h2><ol><li>Bật LIVE trên TikTok, nhập <b>@akkkkk_224</b> (hoặc tên kênh của bạn) rồi bấm <b>Kết nối</b>. Trong TikTok LIVE Studio, chọn <b>Thêm nguồn → Liên kết (Link) → Custom resolution: 1080 × 1920</b> (hoặc OBS Browser Source <b>1080 × 1920</b>) để giữ nét Full HD 1:1.</li><li><b>Chặng 1 – Công ty cuối năm</b>: bình luận <b>1</b> (vào làm), <b>2</b> (làm việc: +10 KPI, +500 xu), <b>3</b> (cà phê), <b>4</b> (xem lương).</li><li><b>Chặng 2 – Bến xe 24 ghế</b>: bấm <b>Bến xe 24 ghế</b> để mở bến. Người xem bình luận <b>lên xe</b>, số ghế <b>1–24</b>, tên tuyến (<b>miền tây</b>, <b>tây nguyên</b>, <b>miền trung</b>, <b>miền bắc</b>), <b>vé</b> hoặc <b>xuống xe</b>. Đủ 24 ghế xe tự xuất bến sau 10 giây!</li><li><b>Thả tim</b> nạp thanh tiếp sức chung. <b>Follow</b> là ký hợp đồng (+1.000 xu, một lần). <b>Quà</b> chia thưởng cho cả phòng, không mua lợi thế hay tranh ghế.</li><li>Chưa LIVE vẫn thử được: <b>Chạy thử phòng LIVE giả lập</b> hoặc các nút <b>Tương tác LIVE thử</b>.</li></ol><p>Điểm, KPI, vé xe và xu là vật phẩm trong game, không quy đổi tiền thật. Hồ sơ được lưu trên máy và giữ lại khi khởi động lại.</p><button class="button button-primary" id="understood-help">Mình hiểu rồi ${icon('arrow')}</button></dialog>
   <button class="overlay-audio" id="overlay-audio" ${overlayMode ? '' : 'hidden'} aria-label="Bật âm thanh cho overlay">${icon('volume')}</button>
 `;
 
@@ -203,16 +242,31 @@ const office = createOffice($('#game-canvas'), (player) => {
   $('#player-selection').textContent = 'Đã chọn trên màn hình';
   profile(player);
   if (!overlayMode) nicknameInput.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-});
+}, overlayMode);
 
 // The HUD is laid out in 1080 × 1920 pixels and scaled with the stage, like the canvas.
+const stageFrameElement = $<HTMLElement>('.stage-frame');
 const stageElement = $('#stage');
 const hudElement = $('#hud');
 const syncStageScale = () => {
+  if (overlayMode) {
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    if (vw > 0 && vh > 0) {
+      const targetW = Math.max(180, Math.floor(Math.min(vw, (vh * 9) / 16)));
+      const targetH = Math.max(320, Math.floor((targetW * 16) / 9));
+      stageFrameElement.style.width = `${targetW}px`;
+      stageFrameElement.style.height = `${targetH}px`;
+    }
+  }
   const width = stageElement.getBoundingClientRect().width || stageElement.clientWidth;
-  if (width > 0) hudElement.style.transform = `scale(${width / STAGE_W})`;
+  if (width > 0) {
+    hudElement.style.transform = Math.abs(width - STAGE_W) < 0.5 ? 'none' : `scale(${width / STAGE_W})`;
+  }
 };
-new ResizeObserver(syncStageScale).observe(stageElement);
+const resizeObserver = new ResizeObserver(syncStageScale);
+resizeObserver.observe(stageElement);
+resizeObserver.observe(document.documentElement);
 window.addEventListener('resize', syncStageScale);
 syncStageScale();
 
@@ -354,10 +408,24 @@ function renderHud(next: GameState) {
     ? `${number(totalSeated)} trên xe · ${number(waitingCount)} chờ`
     : (samples ? `${number(viewers)} nhân viên · ${number(samples)} mẫu` : `${number(viewers)} nhân viên`);
   const badge = $('#hud-badge');
-  const onAir = live.status === 'connected' || live.status === 'reconnecting';
-  const waitingLive = live.status === 'connecting' || (live.status === 'error' && live.code === 'NOT_LIVE');
-  badge.dataset.mode = onAir || waitingLive ? 'live' : live.status === 'mock' ? 'mock' : 'demo';
-  badge.lastChild!.textContent = onAir ? 'LIVE' : waitingLive ? `CHỜ @${live.unique_id}` : live.status === 'mock' ? 'GIẢ LẬP' : 'DEMO';
+  const waitingLive = isWaitingLive(live);
+  let badgeMode = 'idle';
+  let badgeText = 'CHƯA LIVE';
+  if (live.status === 'connected') {
+    badgeMode = 'live';
+    badgeText = 'LIVE';
+  } else if (live.status === 'reconnecting') {
+    badgeMode = 'reconnecting';
+    badgeText = 'NỐI LẠI LIVE';
+  } else if (waitingLive) {
+    badgeMode = 'waiting';
+    badgeText = 'CHỜ LIVE';
+  } else if (live.status === 'mock') {
+    badgeMode = 'mock';
+    badgeText = 'MÔ PHỎNG';
+  }
+  badge.dataset.mode = badgeMode;
+  badge.lastChild!.textContent = badgeText;
   $('#stage-paused').hidden = !session.paused;
   $('#paused-title').textContent = inStation ? 'Bến xe tạm nghỉ' : 'Công ty tạm nghỉ';
   $('#howto-follow').textContent = `+${number(next.rewards.follow)} xu`;
@@ -375,9 +443,9 @@ function renderHud(next: GameState) {
 }
 
 function renderLive(live: LiveStatus) {
-  const onAir = live.status === 'connected' || live.status === 'reconnecting';
-  const waiting = (live.status === 'disconnected' && live.error.includes('Thử lại')) || (live.status === 'error' && (live.code === 'NOT_LIVE' || live.error.includes('tự thử lại')));
-  const active = onAir || live.status === 'connecting' || live.status === 'mock' || waiting;
+  const onAir = isRealLive(live);
+  const waiting = isWaitingLive(live);
+  const active = onAir || live.status === 'mock' || waiting;
   const chip = $('#live-state');
   chip.dataset.status = waiting ? 'connecting' : live.status;
   chip.textContent = (waiting ? 'Đang chờ LIVE…' : LIVE_LABEL[live.status]).toUpperCase();
@@ -411,6 +479,7 @@ function renderLive(live: LiveStatus) {
   pill.classList.toggle('on-air', onAir);
   $('#connection-status span').textContent = !online ? 'Đang nối lại…' : onAir ? `LIVE · @${live.unique_id}` : waiting ? `Chờ LIVE · @${live.unique_id} · sẵn sàng` : live.status === 'mock' ? 'Phòng giả lập' : 'Chơi thử · sẵn sàng';
   $('#audience-note').textContent = onAir ? `Đang nhận sự kiện từ @${live.unique_id}. Hồ sơ định danh bằng ID TikTok.` : waiting ? `Đang chờ @${live.unique_id} bật LIVE trên TikTok LIVE Studio.` : live.status === 'mock' ? 'Phòng giả lập đang chạy. Người xem mẫu được gắn nhãn.' : 'Chưa kết nối TikTok. Đây là dữ liệu chơi thử.';
+  $('#ranking-note').textContent = onAir ? 'Bảng xếp hạng phòng LIVE thật' : 'Nhân vật mẫu được gắn nhãn';
 }
 
 function processEvent(event: GameResult, shouldNotify = true) {
@@ -426,6 +495,7 @@ function processEvent(event: GameResult, shouldNotify = true) {
     if (seenEvents.size > 400) seenEvents.delete(seenEvents.keys().next().value!);
   }
   if (event.duplicate) return;
+  if (state && isRealLive(state.live) && event.player && isDemo(event.player)) return;
   if (event.player && event.player.id === currentPlayerId() && 'kpi' in event.player) profile(event.player);
   if (event.ok) {
     if (event.cue) audio.play(event.cue);
@@ -451,8 +521,15 @@ function setState(next: GameState, events: GameResult[] = []) {
   if (state && state.session.id === next.session.id && next.session.version < state.session.version) return;
   const previousScene = state?.session.scene;
   state = next;
-  office.scene.applyState(next);
-  const { session, stats, station } = next;
+  const view = visibleStateForRender(next);
+  if (isRealLive(next.live) && selectedPlayer && isDemo(selectedPlayer)) {
+    activePlayerId = '';
+    selectedPlayer = undefined;
+    $('#player-selection').textContent = 'Nhân vật của bạn';
+    $('#player-profile').hidden = true;
+  }
+  office.scene.applyState(view);
+  const { session, stats, station } = view;
   const inStation = session.scene === 'station';
   if (previousScene !== session.scene && !captionTimer) {
     showCaption(inStation ? STATION_HINTS[0] : HINTS[0]);
@@ -497,23 +574,23 @@ function setState(next: GameState, events: GameResult[] = []) {
   $<HTMLButtonElement>('#boss-button').hidden = inStation;
   $<HTMLButtonElement>('#boss-button').disabled = inStation || (!open && session.phase !== 'OFFICE') || session.paused || !online;
   $('#save-status').textContent = `Đã lưu hồ sơ · Phiên ${session.id.slice(0, 6).toUpperCase()}`;
-  $('#leaders').innerHTML = next.leaderboard.slice(0, 3).map((player, index) => `<div class="leader"><span class="leader-rank">${index === 0 ? '✦' : `0${index + 1}`}</span><span class="profile-avatar skin-${player.skin % 4}">${initial(player.nickname)}</span><div><b>${escape(player.nickname)}</b><small>${isDemo(player) ? 'Mẫu · ' : ''}${number(player.kpi)} KPI</small></div></div>`).join('') || '<div class="empty-small">Gõ “vào làm” để nhận bàn và việc nhỏ của bạn.</div>';
+  $('#leaders').innerHTML = view.leaderboard.slice(0, 3).map((player, index) => `<div class="leader"><span class="leader-rank">${index === 0 ? '✦' : `0${index + 1}`}</span><span class="profile-avatar skin-${player.skin % 4}">${initial(player.nickname)}</span><div><b>${escape(player.nickname)}</b><small>${isDemo(player) ? 'Mẫu · ' : ''}${number(player.kpi)} KPI</small></div></div>`).join('') || '<div class="empty-small">Gõ “vào làm” để nhận bàn và việc nhỏ của bạn.</div>';
   const timeFormat = new Intl.DateTimeFormat('vi-VN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' });
   const activityIcon = (type: string) => ({ work: 'sparkles', coffee: 'coffee', seed: 'users', join: 'users', return: 'users', follow: 'plus', share: 'share', gift: 'gift', boost: 'heart', seat: 'bus', leave: 'bus', depart: 'road' } as Record<string, string>)[type] ?? 'bell';
-  $('#activity-list').innerHTML = next.activities.slice(0, 5).map((entry) => `<li><span class="activity-icon ${entry.type === 'work' || entry.type === 'seat' ? 'green' : entry.type === 'gift' || entry.type === 'follow' || entry.type === 'depart' ? 'rose' : ''}">${icon(activityIcon(entry.type))}</span><div>${escape(entry.message)}<time>${timeFormat.format(new Date(entry.created_at * 1000))}</time></div></li>`).join('') || '<li class="empty-small">Một ngày làm việc mới đang bắt đầu.</li>';
+  $('#activity-list').innerHTML = view.activities.slice(0, 5).map((entry) => `<li><span class="activity-icon ${entry.type === 'work' || entry.type === 'seat' ? 'green' : entry.type === 'gift' || entry.type === 'follow' || entry.type === 'depart' ? 'rose' : ''}">${icon(activityIcon(entry.type))}</span><div>${escape(entry.message)}<time>${timeFormat.format(new Date(entry.created_at * 1000))}</time></div></li>`).join('') || '<li class="empty-small">Một ngày làm việc mới đang bắt đầu.</li>';
   audio.setScene(session.scene);
   audio.setRunning(!session.paused);
-  renderHud(next);
-  renderLive(next.live);
+  renderHud(view);
+  renderLive(view.live);
   renderProgress();
-  if (!open && session.phase === 'BONUS' && simulation && !inStation) toggleSimulation(false);
+  if (((!open && session.phase === 'BONUS' && !inStation) || isRealLive(next.live)) && simulation) toggleSimulation(false);
   const mine = (event: GameResult) => event.code === 'CONTROL' || event.code === 'DEPARTED' || event.code === 'SEEDED' || event.player?.id === currentPlayerId();
   for (const event of events) processEvent(event, mine(event));
 }
 
 function connectionStatus(connected: boolean) {
   online = connected;
-  for (const id of ['send-command', 'seed-button', 'pause-button']) $<HTMLButtonElement>(`#${id}`).disabled = !connected;
+  for (const id of ['send-command', 'seed-button', 'pause-button', 'clear-demo-button']) $<HTMLButtonElement>(`#${id}`).disabled = !connected;
   if (!connected) $('#save-status').textContent = 'Đang kết nối lại · hồ sơ đã lưu được giữ nguyên';
   if (state) setState(state);
   else { $('#connection-status').classList.toggle('connected', connected); $('#connection-status span').textContent = connected ? 'Chơi thử · sẵn sàng' : 'Đang nối lại…'; }
@@ -577,15 +654,36 @@ async function liveRequest(path: string, body: object = {}) {
 
 $('#live-form').addEventListener('submit', (event) => {
   event.preventDefault();
-  const status = state?.live.status ?? 'idle';
-  const waiting = (status === 'disconnected' && state?.live.error.includes('Thử lại')) || (status === 'error' && (state?.live.code === 'NOT_LIVE' || state?.live.error.includes('tự thử lại')));
-  if (['connected', 'reconnecting', 'connecting', 'mock'].includes(status) || waiting) { void liveRequest('/api/live/disconnect'); return; }
+  const live = state?.live;
+  const status = live?.status ?? 'idle';
+  if (['connected', 'reconnecting', 'connecting', 'mock'].includes(status) || (live && isWaitingLive(live))) {
+    void liveRequest('/api/live/disconnect');
+    return;
+  }
   const name = liveInput.value.trim();
   if (!name) { liveInput.focus(); toast('Nhập tên kênh TikTok đang LIVE, ví dụ @akkkkk_224.'); return; }
   storage.set('tetlive.tiktok', name);
   void liveRequest('/api/live/connect', { unique_id: name });
 });
 $('#live-mock').addEventListener('click', () => { void liveRequest('/api/live/mock'); });
+$('#clear-demo-button').addEventListener('click', async () => {
+  if (!online) return;
+  if (simulation) toggleSimulation(false);
+  const button = $<HTMLButtonElement>('#clear-demo-button');
+  button.disabled = true;
+  try {
+    const result = await action('/api/control', { action: 'clear_demo', event_id: crypto.randomUUID() });
+    if (result?.ok) {
+      activePlayerId = '';
+      selectedPlayer = undefined;
+      $('#player-selection').textContent = 'Nhân vật của bạn';
+      $('#player-profile').hidden = true;
+      renderProgress();
+    }
+  } finally {
+    button.disabled = !online;
+  }
+});
 document.querySelectorAll<HTMLButtonElement>('[data-live]').forEach((button) => button.addEventListener('click', () => {
   const kind = button.dataset.live!;
   void simulate(kind, kind === 'like' ? { count: 20 } : kind === 'gift' ? { diamonds: Number(button.dataset.diamonds), gift: button.dataset.gift } : {});
@@ -709,7 +807,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-sound]').forEach((button) =>
 
 $('#copy-overlay').addEventListener('click', async () => {
   const url = new URL('/?overlay=1', location.origin).href;
-  try { await navigator.clipboard.writeText(url); toast('Đã sao chép link overlay. Dùng nguồn Trình duyệt trong TikTok LIVE Studio hoặc OBS ở 1080 × 1920.'); }
+  try { await navigator.clipboard.writeText(url); toast('Đã sao chép link overlay. Trong TikTok LIVE Studio chọn Link → Custom resolution: 1080 × 1920 để hiển thị nét 1:1.'); }
   catch { toast(`Link overlay: ${url}`); }
 });
 const help = $<HTMLDialogElement>('#help-dialog');
